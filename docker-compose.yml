@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: dedup_postgres
+    environment:
+      POSTGRES_USER: dedup_user
+      POSTGRES_PASSWORD: dedup_password
+      POSTGRES_DB: dedup_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dedup_user -d dedup_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dedup_network
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: dedup_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: dedup_user
+      RABBITMQ_DEFAULT_PASS: dedup_password
+    ports:
+      - "5672:5672"    # AMQP protocol
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dedup_network
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+
+networks:
+  dedup_network:
+    driver: bridge
+
+
