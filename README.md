@@ -1,7 +1,7 @@
-# Cross-Lingual Reclamation De-duplication Engine
+# Pipeline kat detecter wach derti double reclamation ( chki chki hh)
 
-Automated semantic de-duplication pipeline for reclamation tickets in French and Arabic using LaBSE embeddings and pgvector similarity search.
-
+Ach kan 3ni : Automated semantic de-duplication pipeline for reclamation tickets in French and Arabic using LaBSE embeddings and pgvector similarity search.
+3lach LaBSE : 7ent tout simplement it is one of the best performing language agnostic type of embedding system
 ## Features
 
 - **Cross-Lingual Support**: Detects semantic duplicates across French and Arabic using Google's LaBSE model
@@ -12,7 +12,7 @@ Automated semantic de-duplication pipeline for reclamation tickets in French and
   - `0.85 - 0.95`: Flag for manual review
   - `< 0.85`: Unique (no action)
 
-## Architecture
+## L'Architecture
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
@@ -41,7 +41,7 @@ Automated semantic de-duplication pipeline for reclamation tickets in French and
     └── generate_mock_data.py   # Mock data generator
 ```
 
-## Quick Start
+## 2intila9a Sari3aaaaa
 
 ### 1. Start Infrastructure
 
@@ -49,11 +49,11 @@ Automated semantic de-duplication pipeline for reclamation tickets in French and
 docker-compose up -d
 ```
 
-This starts:
-- PostgreSQL 15 with pgvector extension (port 5432)
+Hdchi will starts:
+- PostgreSQL 15 avec le  pgvector extension (port 5432)
 - RabbitMQ with management UI (ports 5672, 15672)
 
-### 2. Install Dependencies
+### 2. Installi Dependencies
 
 ```bash
 python -m venv venv
