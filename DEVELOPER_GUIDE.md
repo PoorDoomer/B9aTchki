@@ -40,24 +40,26 @@ The OPUS Automated Pipeline is a cross-lingual duplicate detection system for re
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
-│  Main App   │────▶│   RabbitMQ   │────▶│  ML Worker  │────▶│ PostgreSQL │
-│ (Producer)  │     │    Queue     │     │ (Consumer)  │     │  + pgvector│
-└─────────────┘     └──────────────┘     └─────────────┘     └────────────┘
+┌────────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
+│   PostgreSQL   │────▶│  PG Trigger  │────▶│  PG Listener │────▶│   RabbitMQ  │────▶│  ML Worker │
+│ (INSERT event) │     │   NOTIFY     │     │ (pg_listener)│     │    Queue    │     │  (Consumer)│
+└────────────────┘     └──────────────┘     └──────────────┘     └─────────────┘     └────────────┘
 ```
 
 ### Flow
 
-1. **Producer** (`src/producer.py`) publishes events when new reclamations are created
-2. **Worker** (`src/worker.py`) consumes events from RabbitMQ
-3. **DuplicateDetector** (`src/duplicate_detector.py`) processes each reclamation:
+1. **Database Insert** triggers PostgreSQL NOTIFY on `reclamation.reclamation`
+2. **PG Listener** (`src/pg_listener.py`) receives NOTIFY event via LISTEN
+3. **PG Listener** publishes event to RabbitMQ using the Producer
+4. **Worker** (`src/worker.py`) consumes events from RabbitMQ
+5. **DuplicateDetector** (`src/duplicate_detector.py`) processes each reclamation:
    - Fetches reclamation from database
    - Preprocesses text (Arabic/French normalization)
    - Generates embeddings using LaBSE
    - Searches for similar reclamations using pgvector
    - Applies business rules (thresholds)
    - Updates status and logs results
-4. **Database** stores reclamations, embeddings, and audit logs
+6. **Database** stores reclamations, embeddings, and audit logs
 
 ---
 
@@ -322,6 +324,41 @@ def _process_message(self, channel, method, properties, body):
 
 ---
 
+#### `src/pg_listener.py`
+**Purpose**: PostgreSQL LISTEN service that bridges database events to RabbitMQ
+
+**Key Classes**:
+- `PostgresListener`: Service that listens for PostgreSQL NOTIFY events
+
+**Key Methods**:
+- `start()`: Start listening for notifications (blocking)
+- `stop()`: Signal the listener to stop
+- `_handle_notification()`: Process received notification and publish to RabbitMQ
+
+**What to modify**:
+- Change the notification channel name
+- Add custom notification handling logic
+- Modify reconnection behavior
+
+**Example - Custom notification handling**:
+```python
+def _handle_notification(self, payload: str) -> bool:
+    data = json.loads(payload)
+    reclamation_id = data.get("reclamation_id")
+    reclamant_id = data.get("reclamant_id")
+    
+    # Add custom logic
+    logger.info(f"Processing notification for {reclamation_id}")
+    
+    # Publish to RabbitMQ
+    return self._producer.publish_new_reclamation(
+        reclamation_id=reclamation_id,
+        reclamant_id=reclamant_id
+    )
+```
+
+---
+
 ### Configuration Files
 
 #### `.env` / `env.example`
@@ -358,6 +395,34 @@ def _process_message(self, channel, method, properties, body):
 - Constraints
 
 **See**: [Database Schema](#database-schema)
+
+---
+
+#### `scripts/setup_notify_trigger.py`
+**Purpose**: Setup PostgreSQL NOTIFY trigger for automatic event publishing
+
+**Usage**:
+```bash
+python scripts/setup_notify_trigger.py              # Interactive mode
+python scripts/setup_notify_trigger.py --auto-approve # Skip prompts
+python scripts/setup_notify_trigger.py --check-only # Only check status
+python scripts/setup_notify_trigger.py --drop       # Remove trigger
+```
+
+**What it creates**:
+- `notify_new_reclamation()` - Trigger function that sends NOTIFY with JSON payload
+- `reclamation_insert_notify` - AFTER INSERT trigger on `reclamation.reclamation`
+
+**NOTIFY Channel**: `new_reclamation`
+
+**Payload Format**:
+```json
+{
+    "reclamation_id": 123,
+    "reclamant_id": 456,
+    "operation": "INSERT"
+}
+```
 
 ---
 

@@ -26,11 +26,16 @@ logger = logging.getLogger(__name__)
 class Reclamation:
     """Data class representing a reclamation record."""
     id: int
-    user_id: int
-    message_libre: str
+    reclamant_id: int
+    description: str
+    motif_id: str
     created_at: datetime
-    status: str
 
+@dataclass
+class Motif:
+    """Data class representing a motif record."""
+    id: str
+    libelle: str
 
 @dataclass
 class DuplicationLog:
@@ -44,12 +49,23 @@ class DuplicationLog:
 
 
 @dataclass
+class ReclamationMatch:
+    """Data class representing a reclamation match record."""
+    id: int
+    reclamation_id: int
+    matched_reclamation_id: int
+    similarity_score: Decimal
+    match_status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
 class SimilarityMatch:
     """Data class representing a similarity search result."""
     reclamation_id: int
     score: float
-    message_libre: Optional[str] = None
-    status: Optional[str] = None
+    motif_id: Optional[str] = None
 
 
 class DatabasePool:
@@ -141,32 +157,58 @@ class ReclamationRepository:
         """
         self._pool = db_pool or DatabasePool()
     
-    def create(self, user_id: int, message_libre: str, status: str = "PENDING") -> int:
+    def create(self, reclamant_id: int, motif_id: str) -> int:
         """
         Create a new reclamation.
         
         Args:
-            user_id: The user ID (grouping key).
-            message_libre: The raw message text.
-            status: Initial status (default: PENDING).
+            reclamant_id: The user ID (grouping key).
+            motif_id: The motif_id.
         
         Returns:
             The ID of the created reclamation.
         """
         query = """
-            INSERT INTO reclamations (user_id, message_libre, status)
-            VALUES (%s, %s, %s)
+            INSERT INTO reclamation.reclamation (reclamant_id, motif_id)
+            VALUES (%s, %s)
             RETURNING id;
         """
         
         with self._pool.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (user_id, message_libre, status))
+                cur.execute(query, (reclamant_id, motif_id))
                 reclamation_id = cur.fetchone()[0]
                 conn.commit()
-                logger.debug(f"Created reclamation {reclamation_id} for user {user_id}")
+                logger.debug(f"Created reclamation {reclamation_id} for user {motif_id}")
                 return reclamation_id
     
+    def get_motif_by_id(self, motif_id: str) -> Optional[Motif]:
+        """
+        Get a motif by ID.
+        
+        Args:
+            motif_id: The motif ID.
+        
+        Returns:
+            Motif object or None if not found.
+        """
+        query = """
+            SELECT id, libelle
+            FROM reclamation.motif
+            WHERE id = %s;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (motif_id,))
+                row = cur.fetchone()
+                
+                if row:
+                    return Motif(**row)
+                return None
+
+
+
     def get_by_id(self, reclamation_id: int) -> Optional[Reclamation]:
         """
         Get a reclamation by ID.
@@ -178,8 +220,8 @@ class ReclamationRepository:
             Reclamation object or None if not found.
         """
         query = """
-            SELECT id, user_id, message_libre, created_at, status
-            FROM reclamations
+            SELECT id, motif_id, reclamant_id, description, created_at
+            FROM reclamation.reclamation
             WHERE id = %s;
         """
         
@@ -192,33 +234,6 @@ class ReclamationRepository:
                     return Reclamation(**row)
                 return None
     
-    def update_status(self, reclamation_id: int, status: str) -> bool:
-        """
-        Update the status of a reclamation.
-        
-        Args:
-            reclamation_id: The reclamation ID.
-            status: New status value.
-        
-        Returns:
-            True if updated, False if not found.
-        """
-        query = """
-            UPDATE reclamations
-            SET status = %s
-            WHERE id = %s;
-        """
-        
-        with self._pool.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (status, reclamation_id))
-                updated = cur.rowcount > 0
-                conn.commit()
-                
-                if updated:
-                    logger.debug(f"Updated reclamation {reclamation_id} status to {status}")
-                return updated
-    
     def delete(self, reclamation_id: int) -> bool:
         """
         Delete a reclamation.
@@ -229,7 +244,7 @@ class ReclamationRepository:
         Returns:
             True if deleted, False if not found.
         """
-        query = "DELETE FROM reclamations WHERE id = %s;"
+        query = "DELETE FROM reclamation.reclamation WHERE id = %s;"
         
         with self._pool.get_connection() as conn:
             with conn.cursor() as cur:
@@ -262,7 +277,7 @@ class EmbeddingRepository:
             embedding: The embedding vector as a list of floats.
         """
         query = """
-            INSERT INTO reclamation_embeddings (reclamation_id, embedding)
+            INSERT INTO public.reclamation_embeddings (reclamation_id, embedding)
             VALUES (%s, %s::vector)
             ON CONFLICT (reclamation_id)
             DO UPDATE SET embedding = EXCLUDED.embedding;
@@ -288,7 +303,7 @@ class EmbeddingRepository:
         """
         query = """
             SELECT embedding::text
-            FROM reclamation_embeddings
+            FROM public.reclamation_embeddings
             WHERE reclamation_id = %s;
         """
         
@@ -306,7 +321,7 @@ class EmbeddingRepository:
     def find_similar(
         self,
         embedding: list[float],
-        user_id: int,
+        reclamant_id: int,
         exclude_id: int,
         min_score: float = 0.85,
         time_window_days: int = 7,
@@ -317,11 +332,11 @@ class EmbeddingRepository:
         
         Performs hybrid search combining:
         - Vector similarity (cosine)
-        - Metadata filtering (user_id, time window)
+        - Metadata filtering (reclamant_id, time window)
         
         Args:
             embedding: Query embedding vector.
-            user_id: User ID for grouping filter.
+            reclamant_id: User ID for grouping filter.
             exclude_id: Reclamation ID to exclude (self).
             min_score: Minimum similarity score threshold.
             time_window_days: Time window in days for search scope.
@@ -334,12 +349,11 @@ class EmbeddingRepository:
             SELECT 
                 r.id as reclamation_id,
                 1 - (e.embedding <=> %s::vector) as score,
-                r.message_libre,
-                r.status
-            FROM reclamations r
-            JOIN reclamation_embeddings e ON r.id = e.reclamation_id
+                r.motif_id
+            FROM reclamation.reclamation r
+            JOIN public.reclamation_embeddings e ON r.id = e.reclamation_id
             WHERE 
-                r.user_id = %s
+                r.reclamant_id = %s
                 AND r.id != %s
                 AND r.created_at > NOW() - INTERVAL '%s days'
                 AND 1 - (e.embedding <=> %s::vector) > %s
@@ -352,7 +366,7 @@ class EmbeddingRepository:
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 cur.execute(query, (
                     embedding_str,
-                    user_id,
+                    reclamant_id,
                     exclude_id,
                     time_window_days,
                     embedding_str,
@@ -365,8 +379,7 @@ class EmbeddingRepository:
                     results.append(SimilarityMatch(
                         reclamation_id=row["reclamation_id"],
                         score=float(row["score"]),
-                        message_libre=row.get("message_libre"),
-                        status=row.get("status")
+                        motif_id=row.get("motif_id")
                     ))
                 
                 return results
@@ -381,7 +394,7 @@ class EmbeddingRepository:
         Returns:
             True if deleted, False if not found.
         """
-        query = "DELETE FROM reclamation_embeddings WHERE reclamation_id = %s;"
+        query = "DELETE FROM public.reclamation_embeddings WHERE reclamation_id = %s;"
         
         with self._pool.get_connection() as conn:
             with conn.cursor() as cur:
@@ -425,7 +438,7 @@ class DuplicationLogRepository:
             The ID of the created log entry.
         """
         query = """
-            INSERT INTO duplication_logs 
+            INSERT INTO public.duplication_logs 
                 (source_reclamation_id, matched_reclamation_id, similarity_score, action)
             VALUES (%s, %s, %s, %s)
             RETURNING id;
@@ -460,7 +473,7 @@ class DuplicationLogRepository:
         query = """
             SELECT id, source_reclamation_id, matched_reclamation_id, 
                    similarity_score, action, detected_at
-            FROM duplication_logs
+            FROM public.duplication_logs
             WHERE source_reclamation_id = %s
             ORDER BY detected_at DESC;
         """
@@ -483,7 +496,7 @@ class DuplicationLogRepository:
         query = """
             SELECT id, source_reclamation_id, matched_reclamation_id,
                    similarity_score, action, detected_at
-            FROM duplication_logs
+            FROM public.duplication_logs
             ORDER BY detected_at DESC
             LIMIT %s;
         """
@@ -492,6 +505,166 @@ class DuplicationLogRepository:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(query, (limit,))
                 return [DuplicationLog(**row) for row in cur.fetchall()]
+
+
+class ReclamationMatchRepository:
+    """
+    Repository for reclamation match (duplicate relationship) operations.
+    """
+    
+    def __init__(self, db_pool: Optional[DatabasePool] = None):
+        """
+        Initialize the repository.
+        
+        Args:
+            db_pool: Optional database pool. If not provided, uses singleton.
+        """
+        self._pool = db_pool or DatabasePool()
+    
+    def create(
+        self,
+        reclamation_id: int,
+        matched_reclamation_id: int,
+        similarity_score: float,
+        match_status: str = "PENDING"
+    ) -> int:
+        """
+        Create a reclamation match entry.
+        
+        Args:
+            reclamation_id: The source reclamation ID.
+            matched_reclamation_id: The matched reclamation ID.
+            similarity_score: The similarity score.
+            match_status: Match status (PENDING, CONFIRMED_DUPLICATE, NOT_DUPLICATE, NEEDS_REVIEW).
+        
+        Returns:
+            The ID of the created match entry.
+        """
+        query = """
+            INSERT INTO public.reclamation_matches 
+                (reclamation_id, matched_reclamation_id, similarity_score, match_status)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (reclamation_id, matched_reclamation_id)
+            DO UPDATE SET 
+                similarity_score = EXCLUDED.similarity_score,
+                match_status = EXCLUDED.match_status,
+                updated_at = NOW()
+            RETURNING id;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (
+                    reclamation_id,
+                    matched_reclamation_id,
+                    similarity_score,
+                    match_status
+                ))
+                match_id = cur.fetchone()[0]
+                conn.commit()
+                logger.info(
+                    f"Saved match: {reclamation_id} -> {matched_reclamation_id} "
+                    f"(score: {similarity_score:.4f}, status: {match_status})"
+                )
+                return match_id
+    
+    def get_by_reclamation(self, reclamation_id: int) -> list[ReclamationMatch]:
+        """
+        Get all matches for a reclamation.
+        
+        Args:
+            reclamation_id: The reclamation ID.
+        
+        Returns:
+            List of ReclamationMatch objects.
+        """
+        query = """
+            SELECT id, reclamation_id, matched_reclamation_id, 
+                   similarity_score, match_status, created_at, updated_at
+            FROM public.reclamation_matches
+            WHERE reclamation_id = %s
+            ORDER BY similarity_score DESC;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (reclamation_id,))
+                return [ReclamationMatch(**row) for row in cur.fetchall()]
+    
+    def get_by_matched(self, matched_reclamation_id: int) -> list[ReclamationMatch]:
+        """
+        Get all reclamations that match a given reclamation.
+        
+        Args:
+            matched_reclamation_id: The matched reclamation ID.
+        
+        Returns:
+            List of ReclamationMatch objects.
+        """
+        query = """
+            SELECT id, reclamation_id, matched_reclamation_id, 
+                   similarity_score, match_status, created_at, updated_at
+            FROM public.reclamation_matches
+            WHERE matched_reclamation_id = %s
+            ORDER BY similarity_score DESC;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (matched_reclamation_id,))
+                return [ReclamationMatch(**row) for row in cur.fetchall()]
+    
+    def update_status(self, match_id: int, match_status: str) -> bool:
+        """
+        Update the status of a match.
+        
+        Args:
+            match_id: The match ID.
+            match_status: New status value.
+        
+        Returns:
+            True if updated, False if not found.
+        """
+        query = """
+            UPDATE public.reclamation_matches
+            SET match_status = %s, updated_at = NOW()
+            WHERE id = %s;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (match_status, match_id))
+                updated = cur.rowcount > 0
+                conn.commit()
+                
+                if updated:
+                    logger.debug(f"Updated match {match_id} status to {match_status}")
+                return updated
+    
+    def get_by_status(self, match_status: str, limit: int = 100) -> list[ReclamationMatch]:
+        """
+        Get matches by status.
+        
+        Args:
+            match_status: The match status to filter by.
+            limit: Maximum number of entries to return.
+        
+        Returns:
+            List of ReclamationMatch objects.
+        """
+        query = """
+            SELECT id, reclamation_id, matched_reclamation_id, 
+                   similarity_score, match_status, created_at, updated_at
+            FROM public.reclamation_matches
+            WHERE match_status = %s
+            ORDER BY created_at DESC
+            LIMIT %s;
+        """
+        
+        with self._pool.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (match_status, limit))
+                return [ReclamationMatch(**row) for row in cur.fetchall()]
 
 
 def get_db_pool(config: Optional[PostgresConfig] = None) -> DatabasePool:
@@ -545,4 +718,16 @@ def get_duplication_log_repo(db_pool: Optional[DatabasePool] = None) -> Duplicat
     """
     return DuplicationLogRepository(db_pool)
 
+
+def get_reclamation_match_repo(db_pool: Optional[DatabasePool] = None) -> ReclamationMatchRepository:
+    """
+    Get a ReclamationMatchRepository instance.
+    
+    Args:
+        db_pool: Optional database pool.
+    
+    Returns:
+        ReclamationMatchRepository instance.
+    """
+    return ReclamationMatchRepository(db_pool)
 

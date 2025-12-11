@@ -16,6 +16,7 @@ from src.database import (
     ReclamationRepository,
     EmbeddingRepository,
     DuplicationLogRepository,
+    ReclamationMatchRepository,
     Reclamation,
     SimilarityMatch,
 )
@@ -34,11 +35,11 @@ class DuplicateAction(Enum):
 
 
 class ReclamationStatus(Enum):
-    """Status values for reclamations."""
+    """Status values for reclamation matches."""
     PENDING = "PENDING"
-    DUPLICATE = "DUPLICATE"
-    POTENTIAL_DUPLICATE = "POTENTIAL_DUPLICATE"
-    PROCESSED = "PROCESSED"
+    CONFIRMED_DUPLICATE = "CONFIRMED_DUPLICATE"
+    NOT_DUPLICATE = "NOT_DUPLICATE"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
 @dataclass
@@ -79,6 +80,7 @@ class DuplicateDetector:
         self._reclamation_repo = ReclamationRepository(db_pool)
         self._embedding_repo = EmbeddingRepository(db_pool)
         self._log_repo = DuplicationLogRepository(db_pool)
+        self._match_repo = ReclamationMatchRepository(db_pool)
         
         # Thresholds
         self.threshold_auto_duplicate = self._config.threshold_auto_duplicate
@@ -109,20 +111,20 @@ class DuplicateDetector:
         else:
             return DuplicateAction.NO_ACTION
     
-    def get_status_for_action(self, action: DuplicateAction) -> ReclamationStatus:
+    def get_match_status_for_action(self, action: DuplicateAction) -> ReclamationStatus:
         """
-        Get the reclamation status for a given action.
+        Get the match status for a given action.
         
         Args:
             action: The duplicate action.
         
         Returns:
-            The appropriate ReclamationStatus.
+            The appropriate ReclamationStatus for the match.
         """
         if action == DuplicateAction.AUTO_MARK_DUPLICATE:
-            return ReclamationStatus.DUPLICATE
+            return ReclamationStatus.CONFIRMED_DUPLICATE
         elif action == DuplicateAction.FLAG_FOR_REVIEW:
-            return ReclamationStatus.POTENTIAL_DUPLICATE
+            return ReclamationStatus.NEEDS_REVIEW
         else:
             return ReclamationStatus.PENDING
     
@@ -159,7 +161,17 @@ class DuplicateDetector:
             )
         
         # Step 2: Preprocess the text
-        normalized_text = normalize_text(reclamation.message_libre)
+        # motif = self._reclamation_repo.get_motif_by_id(reclamation.motif_id) if reclamation.motif_id else None
+        # if motif:
+        #     normalized_text = normalize_text(motif.libelle)
+        # else:
+        #     return DuplicateDetectionResult(
+        #         reclamation_id=reclamation_id,
+        #         is_duplicate=False,
+        #         action=DuplicateAction.NO_ACTION,
+        #         message="Motif not found"
+        #     )
+        normalized_text = normalize_text(reclamation.description)
         if not normalized_text:
             logger.warning(f"Reclamation {reclamation_id} has empty text after normalization")
             return DuplicateDetectionResult(
@@ -179,7 +191,7 @@ class DuplicateDetector:
         # Step 5: Search for similar reclamations
         matches = self._embedding_repo.find_similar(
             embedding=embedding,
-            user_id=reclamation.user_id,
+            reclamant_id=reclamation.reclamant_id,
             exclude_id=reclamation_id,
             min_score=self.threshold_review,
             time_window_days=self.time_window_days,
@@ -199,11 +211,16 @@ class DuplicateDetector:
         best_match = matches[0]
         action = self.determine_action(best_match.score)
         
-        # Step 7: Update status and log based on action
+        # Step 7: Create match record and log based on action
         if action != DuplicateAction.NO_ACTION:
-            # Update the reclamation status
-            new_status = self.get_status_for_action(action)
-            self._reclamation_repo.update_status(reclamation_id, new_status.value)
+            # Create match record with status
+            match_status = self.get_match_status_for_action(action)
+            self._match_repo.create(
+                reclamation_id=reclamation_id,
+                matched_reclamation_id=best_match.reclamation_id,
+                similarity_score=best_match.score,
+                match_status=match_status.value
+            )
             
             # Create audit log
             self._log_repo.create(

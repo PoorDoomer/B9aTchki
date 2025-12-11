@@ -17,6 +17,7 @@ from pika.exceptions import AMQPConnectionError, AMQPChannelError
 from src.config import get_config, RabbitMQConfig
 from src.producer import ReclamationEvent, RabbitMQProducer
 from src.duplicate_detector import DuplicateDetector, DuplicateDetectionResult
+from src.embeddings import get_embedding_model
 
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,7 @@ class RabbitMQWorker:
         try:
             # Parse the event
             event = ReclamationEvent.from_json(body.decode('utf-8'))
-            logger.info(f"Processing reclamation {event.reclamation_id} for user {event.user_id}")
+            logger.info(f"Processing reclamation {event.reclamation_id} for user {event.reclamant_id}")
             
             # Execute duplicate detection
             detector = self._get_detector()
@@ -323,6 +324,67 @@ class RabbitMQWorker:
             logger.error(f"Failed to get queue size: {e}")
             return -1
     
+    def process_batch(self, batch_size: int = 10) -> list[DuplicateDetectionResult]:
+        """
+        Process multiple messages in a batch.
+        
+        Efficiently processes up to batch_size messages before disconnecting.
+        Uses the same detector instance and connection for all messages.
+        
+        Args:
+            batch_size: Maximum number of messages to process.
+        
+        Returns:
+            List of DuplicateDetectionResult objects for processed messages.
+        """
+        results = []
+        
+        try:
+            self.connect()
+            
+            # Pre-initialize the detector (which loads the model)
+            detector = self._get_detector()
+            
+            processed = 0
+            while processed < batch_size:
+                # Try to get one message
+                method, properties, body = self._channel.basic_get(
+                    queue=self._config.queue,
+                    auto_ack=False
+                )
+                
+                if method is None:
+                    # No more messages in queue
+                    logger.info(f"Batch complete: processed {processed} messages (queue empty)")
+                    break
+                
+                try:
+                    event = ReclamationEvent.from_json(body.decode('utf-8'))
+                    logger.info(f"Batch processing reclamation {event.reclamation_id}")
+                    
+                    result = detector.process_reclamation(event.reclamation_id)
+                    results.append(result)
+                    
+                    self._channel.basic_ack(delivery_tag=method.delivery_tag)
+                    processed += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error in batch processing: {e}")
+                    self._channel.basic_ack(delivery_tag=method.delivery_tag)
+                    # Send to DLQ
+                    try:
+                        event = ReclamationEvent.from_json(body.decode('utf-8'))
+                        if self._producer:
+                            self._producer.publish_to_dlq(event, str(e))
+                    except Exception:
+                        self._send_to_dlq(body, f"Batch error: {str(e)}")
+            
+            logger.info(f"Batch processing complete: {processed} messages processed")
+            return results
+            
+        finally:
+            self.disconnect()
+
     def __enter__(self) -> "RabbitMQWorker":
         """Context manager entry."""
         self.connect()
@@ -354,7 +416,7 @@ def run_worker() -> None:
     """
     Main entry point to run the worker.
     
-    Sets up logging and starts the worker.
+    Sets up logging, preloads the embedding model, and starts the worker.
     """
     # Configure logging
     logging.basicConfig(
@@ -363,6 +425,17 @@ def run_worker() -> None:
     )
     
     logger.info("Starting de-duplication worker...")
+    
+    # Preload the embedding model to avoid cold start latency
+    logger.info("Preloading LaBSE embedding model...")
+    try:
+        model = get_embedding_model()
+        # Trigger actual model loading by accessing the model property
+        _ = model.model
+        logger.info("Embedding model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {e}", exc_info=True)
+        sys.exit(1)
     
     try:
         worker = RabbitMQWorker()

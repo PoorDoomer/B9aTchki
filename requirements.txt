@@ -1,5 +1,5 @@
 # Core ML Dependencies
-sentence-transformers==2.2.2
+sentence-transformers
 torch>=2.0.0
 transformers>=4.30.0
 

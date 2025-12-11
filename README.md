@@ -15,10 +15,10 @@ Ach kan 3ni : Automated semantic de-duplication pipeline for reclamation tickets
 ## L'Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
-│  Main App   │────▶│   RabbitMQ   │────▶│  ML Worker  │────▶│ PostgreSQL │
-│ (Producer)  │     │    Queue     │     │ (Consumer)  │     │  + pgvector│
-└─────────────┘     └──────────────┘     └─────────────┘     └────────────┘
+┌────────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐     ┌────────────┐
+│   PostgreSQL   │────▶│  PG Trigger  │────▶│  PG Listener │────▶│   RabbitMQ  │────▶│  ML Worker │
+│ (INSERT event) │     │   NOTIFY     │     │ (pg_listener)│     │    Queue    │     │  (Consumer)│
+└────────────────┘     └──────────────┘     └──────────────┘     └─────────────┘     └────────────┘
 ```
 
 ## Project Structure
@@ -35,10 +35,14 @@ Ach kan 3ni : Automated semantic de-duplication pipeline for reclamation tickets
 │   ├── database.py             # PostgreSQL connection & queries
 │   ├── duplicate_detector.py   # Core similarity logic
 │   ├── producer.py             # RabbitMQ message publisher
-│   └── worker.py               # RabbitMQ consumer worker
+│   ├── worker.py               # RabbitMQ consumer worker
+│   └── pg_listener.py          # PostgreSQL NOTIFY listener → RabbitMQ bridge
 ├── tests/                      # Unit and integration tests (150 tests)
 └── scripts/
-    └── generate_mock_data.py   # Mock data generator
+│   ├── generate_mock_data.py   # Mock data generator
+│   ├── db_setup.py             # Database setup script
+│   ├── process_reclamations.py # Batch processing script
+│   └── setup_notify_trigger.py # PostgreSQL NOTIFY trigger setup
 ```
 
 ## 2intila9a Sari3aaaaa
@@ -67,20 +71,34 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-### 4. Start the Worker
+### 4. Setup PostgreSQL NOTIFY Trigger
+
+```bash
+python scripts/setup_notify_trigger.py
+```
+
+This creates a database trigger that automatically sends events when new reclamations are inserted.
+
+### 5. Start the PG Listener (Terminal 1)
+
+```bash
+python -m src.pg_listener
+```
+
+This service listens for PostgreSQL NOTIFY events and forwards them to RabbitMQ.
+
+### 6. Start the Worker (Terminal 2)
 
 ```bash
 python -m src.worker
 ```
 
-### 5. Publish Events
+### 7. Test - Insert a Reclamation
 
-```python
-from src.producer import publish_reclamation_event
-
-# When a new reclamation is created
-publish_reclamation_event(reclamation_id=123, user_id=10)
-```
+When you insert a row into `reclamation.reclamation`, the pipeline automatically:
+1. Trigger fires → sends NOTIFY
+2. PG Listener catches → publishes to RabbitMQ
+3. Worker processes → runs duplicate detection
 
 ## Configuration
 

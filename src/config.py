@@ -112,10 +112,14 @@ class DuplicateDetectionConfig:
     
     def __post_init__(self):
         """Load values from environment if not provided."""
+        # Thresholds lowered to better capture cross-lingual paraphrased duplicates:
+        # - LaBSE gives ~0.55-0.80 for FR/AR insurance descriptions about same topic
+        # - AUTO_DUPLICATE: 0.85+ means very similar phrasing (was 0.95)
+        # - REVIEW: 0.70+ means same topic with different wording (was 0.85)
         if self.threshold_auto_duplicate is None:
-            self.threshold_auto_duplicate = float(os.getenv("THRESHOLD_AUTO_DUPLICATE", "0.95"))
+            self.threshold_auto_duplicate = float(os.getenv("THRESHOLD_AUTO_DUPLICATE", "0.85"))
         if self.threshold_review is None:
-            self.threshold_review = float(os.getenv("THRESHOLD_REVIEW", "0.85"))
+            self.threshold_review = float(os.getenv("THRESHOLD_REVIEW", "0.70"))
         if self.time_window_days is None:
             self.time_window_days = int(os.getenv("TIME_WINDOW_DAYS", "7"))
 

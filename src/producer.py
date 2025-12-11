@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class ReclamationEvent:
     """Event data for a new reclamation."""
     reclamation_id: int
-    user_id: int
+    reclamant_id: int
     event_type: str = "new_reclamation"
     
     def to_json(self) -> str:
@@ -135,7 +135,7 @@ class RabbitMQProducer:
             
             logger.debug(
                 f"Published event: reclamation_id={event.reclamation_id}, "
-                f"user_id={event.user_id}"
+                f"user_id={event.reclamant_id}"
             )
             return True
             
@@ -145,7 +145,7 @@ class RabbitMQProducer:
             self._channel = None
             return False
     
-    def publish_new_reclamation(self, reclamation_id: int, user_id: int) -> bool:
+    def publish_new_reclamation(self, reclamation_id: int, reclamant_id: int) -> bool:
         """
         Convenience method to publish a new reclamation event.
         
@@ -158,7 +158,7 @@ class RabbitMQProducer:
         """
         event = ReclamationEvent(
             reclamation_id=reclamation_id,
-            user_id=user_id,
+            reclamant_id=reclamant_id,
             event_type="new_reclamation"
         )
         return self.publish(event)
@@ -227,7 +227,7 @@ def get_producer(config: Optional[RabbitMQConfig] = None) -> RabbitMQProducer:
     return RabbitMQProducer(config)
 
 
-def publish_reclamation_event(reclamation_id: int, user_id: int) -> bool:
+def publish_reclamation_event(reclamation_id: int, reclamant_id: int) -> bool:
     """
     Convenience function to publish a reclamation event.
     
@@ -235,14 +235,14 @@ def publish_reclamation_event(reclamation_id: int, user_id: int) -> bool:
     
     Args:
         reclamation_id: The ID of the reclamation.
-        user_id: The user ID.
+        reclamant_id: The user ID.
     
     Returns:
         True if published successfully, False otherwise.
     """
     try:
         with RabbitMQProducer() as producer:
-            return producer.publish_new_reclamation(reclamation_id, user_id)
+            return producer.publish_new_reclamation(reclamation_id, reclamant_id)
     except Exception as e:
         logger.error(f"Failed to publish reclamation event: {e}")
         return False
