@@ -221,7 +221,7 @@ class DuplicateDetector:
                 similarity_score=best_match.score,
                 match_status=match_status.value
             )
-            
+            logger.info("AUDIT LOG")
             # Create audit log
             self._log_repo.create(
                 source_reclamation_id=reclamation_id,
