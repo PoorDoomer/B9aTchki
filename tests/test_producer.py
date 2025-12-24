@@ -1,11 +1,11 @@
 """
-Unit tests for the RabbitMQ producer module.
+Unit tests for the Kafka producer module.
 Tests message publishing and event serialization.
 """
 
 import pytest
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 
 class TestReclamationEvent:
@@ -17,178 +17,165 @@ class TestReclamationEvent:
         
         event = ReclamationEvent(
             reclamation_id=1,
-            user_id=10,
+            reclamant_id=10,
             event_type="new_reclamation"
         )
         
         assert event.reclamation_id == 1
-        assert event.user_id == 10
+        assert event.reclamant_id == 10
         assert event.event_type == "new_reclamation"
     
     def test_event_default_type(self):
         """Test default event type."""
         from src.producer import ReclamationEvent
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
+        event = ReclamationEvent(reclamation_id=1, reclamant_id=10)
         assert event.event_type == "new_reclamation"
     
     def test_event_to_json(self):
         """Test serializing event to JSON."""
         from src.producer import ReclamationEvent
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
+        event = ReclamationEvent(reclamation_id=1, reclamant_id=10)
         json_str = event.to_json()
         
         data = json.loads(json_str)
         assert data["reclamation_id"] == 1
-        assert data["user_id"] == 10
+        assert data["reclamant_id"] == 10
         assert data["event_type"] == "new_reclamation"
     
     def test_event_from_json(self):
         """Test deserializing event from JSON."""
         from src.producer import ReclamationEvent
         
-        json_str = '{"reclamation_id": 1, "user_id": 10, "event_type": "new_reclamation"}'
+        json_str = '{"reclamation_id": 1, "reclamant_id": 10, "event_type": "new_reclamation"}'
         event = ReclamationEvent.from_json(json_str)
         
         assert event.reclamation_id == 1
-        assert event.user_id == 10
+        assert event.reclamant_id == 10
         assert event.event_type == "new_reclamation"
     
     def test_event_roundtrip(self):
         """Test event serialization roundtrip."""
         from src.producer import ReclamationEvent
         
-        original = ReclamationEvent(reclamation_id=42, user_id=100)
+        original = ReclamationEvent(reclamation_id=42, reclamant_id=100)
         json_str = original.to_json()
         restored = ReclamationEvent.from_json(json_str)
         
         assert original.reclamation_id == restored.reclamation_id
-        assert original.user_id == restored.user_id
+        assert original.reclamant_id == restored.reclamant_id
         assert original.event_type == restored.event_type
 
 
-class TestRabbitMQProducer:
-    """Tests for RabbitMQProducer."""
+class TestKafkaEventProducer:
+    """Tests for KafkaEventProducer."""
     
     @pytest.fixture
-    def mock_pika(self):
-        """Mock pika library."""
-        with patch('src.producer.pika') as mock:
-            mock_conn = MagicMock()
-            mock_channel = MagicMock()
-            mock_conn.channel.return_value = mock_channel
-            mock.BlockingConnection.return_value = mock_conn
-            mock.PlainCredentials.return_value = MagicMock()
-            mock.ConnectionParameters.return_value = MagicMock()
-            mock.BasicProperties.return_value = MagicMock()
+    def mock_kafka(self):
+        """Mock kafka library."""
+        with patch('src.producer.KafkaClient') as mock:
+            mock_producer = MagicMock()
+            mock_future = MagicMock()
+            mock_future.get.return_value = None
+            mock_producer.send.return_value = mock_future
+            mock.return_value = mock_producer
             
-            yield mock, mock_conn, mock_channel
+            yield mock, mock_producer
     
-    def test_producer_connect(self, mock_pika):
+    def test_producer_connect(self, mock_kafka):
         """Test producer connection."""
-        from src.producer import RabbitMQProducer
+        from src.producer import KafkaEventProducer
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_producer = mock_kafka
         
-        producer = RabbitMQProducer()
+        producer = KafkaEventProducer()
         producer.connect()
         
-        mock.BlockingConnection.assert_called_once()
-        mock_channel.queue_declare.assert_called()
+        mock_class.assert_called_once()
+        assert producer._producer is not None
     
-    def test_producer_disconnect(self, mock_pika):
+    def test_producer_disconnect(self, mock_kafka):
         """Test producer disconnection."""
-        from src.producer import RabbitMQProducer
+        from src.producer import KafkaEventProducer
         
-        mock, mock_conn, mock_channel = mock_pika
-        mock_conn.is_open = True
+        mock_class, mock_producer = mock_kafka
         
-        producer = RabbitMQProducer()
+        producer = KafkaEventProducer()
         producer.connect()
         producer.disconnect()
         
-        mock_conn.close.assert_called_once()
+        mock_producer.flush.assert_called_once()
+        mock_producer.close.assert_called_once()
     
-    def test_producer_publish(self, mock_pika):
+    def test_producer_publish(self, mock_kafka):
         """Test publishing an event."""
-        from src.producer import RabbitMQProducer, ReclamationEvent
+        from src.producer import KafkaEventProducer, ReclamationEvent
         
-        mock, mock_conn, mock_channel = mock_pika
-        mock_conn.is_open = True
+        mock_class, mock_producer = mock_kafka
         
-        producer = RabbitMQProducer()
+        producer = KafkaEventProducer()
         producer.connect()
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
+        event = ReclamationEvent(reclamation_id=1, reclamant_id=10)
         result = producer.publish(event)
         
         assert result is True
-        mock_channel.basic_publish.assert_called_once()
+        mock_producer.send.assert_called_once()
     
-    def test_producer_publish_new_reclamation(self, mock_pika):
+    def test_producer_publish_new_reclamation(self, mock_kafka):
         """Test convenience method for publishing."""
-        from src.producer import RabbitMQProducer
+        from src.producer import KafkaEventProducer
         
-        mock, mock_conn, mock_channel = mock_pika
-        mock_conn.is_open = True
+        mock_class, mock_producer = mock_kafka
         
-        producer = RabbitMQProducer()
+        producer = KafkaEventProducer()
         producer.connect()
         
         result = producer.publish_new_reclamation(1, 10)
         
         assert result is True
-        mock_channel.basic_publish.assert_called_once()
+        mock_producer.send.assert_called_once()
     
-    def test_producer_publish_to_dlq(self, mock_pika):
-        """Test publishing to dead letter queue."""
-        from src.producer import RabbitMQProducer, ReclamationEvent
+    def test_producer_publish_to_dlq(self, mock_kafka):
+        """Test publishing to dead letter topic."""
+        from src.producer import KafkaEventProducer, ReclamationEvent
         
-        mock, mock_conn, mock_channel = mock_pika
-        mock_conn.is_open = True
+        mock_class, mock_producer = mock_kafka
         
-        producer = RabbitMQProducer()
+        producer = KafkaEventProducer()
         producer.connect()
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
+        event = ReclamationEvent(reclamation_id=1, reclamant_id=10)
         result = producer.publish_to_dlq(event, "Test error")
         
         assert result is True
-        # Should have published to DLQ
-        mock_channel.basic_publish.assert_called()
+        # Should have published to DLQ topic
+        mock_producer.send.assert_called()
     
-    def test_producer_context_manager(self, mock_pika):
+    def test_producer_context_manager(self, mock_kafka):
         """Test using producer as context manager."""
-        from src.producer import RabbitMQProducer
+        from src.producer import KafkaEventProducer
         
-        mock, mock_conn, mock_channel = mock_pika
-        mock_conn.is_open = True
+        mock_class, mock_producer = mock_kafka
         
-        with RabbitMQProducer() as producer:
+        with KafkaEventProducer() as producer:
             result = producer.publish_new_reclamation(1, 10)
             assert result is True
         
-        mock_conn.close.assert_called()
+        mock_producer.close.assert_called()
     
-    def test_producer_reconnect_on_failure(self, mock_pika):
-        """Test auto-reconnection on connection failure."""
-        from src.producer import RabbitMQProducer
+    def test_producer_auto_connect(self, mock_kafka):
+        """Test auto-connection when publishing."""
+        from src.producer import KafkaEventProducer
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_producer = mock_kafka
         
-        # First check returns False (disconnected), second returns True
-        mock_conn.is_open = False
+        producer = KafkaEventProducer()
+        # Not explicitly connected, should auto-connect
+        producer.publish_new_reclamation(1, 10)
         
-        producer = RabbitMQProducer()
-        producer._connection = mock_conn
-        producer._channel = mock_channel
-        
-        # This should trigger reconnection
-        producer._ensure_connected()
-        
-        # Should have reconnected
-        assert mock.BlockingConnection.call_count >= 1
+        mock_class.assert_called_once()
 
 
 class TestProducerFactoryFunctions:
@@ -196,16 +183,16 @@ class TestProducerFactoryFunctions:
     
     def test_get_producer(self):
         """Test get_producer factory function."""
-        from src.producer import get_producer, RabbitMQProducer
+        from src.producer import get_producer, KafkaEventProducer
         
         producer = get_producer()
-        assert isinstance(producer, RabbitMQProducer)
+        assert isinstance(producer, KafkaEventProducer)
     
     def test_publish_reclamation_event(self):
         """Test publish_reclamation_event convenience function."""
         from src.producer import publish_reclamation_event
         
-        with patch('src.producer.RabbitMQProducer') as MockProducer:
+        with patch('src.producer.KafkaEventProducer') as MockProducer:
             mock_instance = MagicMock()
             mock_instance.publish_new_reclamation.return_value = True
             MockProducer.return_value.__enter__ = MagicMock(return_value=mock_instance)
@@ -221,25 +208,18 @@ class TestProducerErrorHandling:
     
     def test_publish_connection_error(self):
         """Test handling connection errors during publish."""
-        from src.producer import RabbitMQProducer, ReclamationEvent
-        from pika.exceptions import AMQPConnectionError
+        from src.producer import KafkaEventProducer, ReclamationEvent
+        from kafka.errors import KafkaError
         
-        with patch('src.producer.pika') as mock_pika:
-            mock_conn = MagicMock()
-            mock_channel = MagicMock()
-            mock_channel.basic_publish.side_effect = AMQPConnectionError("Connection lost")
-            mock_conn.channel.return_value = mock_channel
-            mock_conn.is_open = True
-            mock_pika.BlockingConnection.return_value = mock_conn
-            mock_pika.PlainCredentials.return_value = MagicMock()
-            mock_pika.ConnectionParameters.return_value = MagicMock()
+        with patch('src.producer.KafkaClient') as mock_kafka:
+            mock_producer = MagicMock()
+            mock_producer.send.side_effect = KafkaError("Connection lost")
+            mock_kafka.return_value = mock_producer
             
-            producer = RabbitMQProducer()
+            producer = KafkaEventProducer()
             producer.connect()
             
-            event = ReclamationEvent(reclamation_id=1, user_id=10)
+            event = ReclamationEvent(reclamation_id=1, reclamant_id=10)
             result = producer.publish(event)
             
             assert result is False
-
-

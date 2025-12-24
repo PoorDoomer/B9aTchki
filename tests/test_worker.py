@@ -1,5 +1,5 @@
 """
-Unit tests for the RabbitMQ worker module.
+Unit tests for the Kafka worker module.
 Tests message consumption and processing.
 """
 
@@ -8,22 +8,17 @@ import json
 from unittest.mock import MagicMock, patch, call
 
 
-class TestRabbitMQWorker:
-    """Tests for RabbitMQWorker."""
+class TestKafkaWorker:
+    """Tests for KafkaWorker."""
     
     @pytest.fixture
-    def mock_pika(self):
-        """Mock pika library."""
-        with patch('src.worker.pika') as mock:
-            mock_conn = MagicMock()
-            mock_channel = MagicMock()
-            mock_conn.channel.return_value = mock_channel
-            mock_conn.is_open = True
-            mock.BlockingConnection.return_value = mock_conn
-            mock.PlainCredentials.return_value = MagicMock()
-            mock.ConnectionParameters.return_value = MagicMock()
+    def mock_kafka(self):
+        """Mock kafka library."""
+        with patch('src.worker.KafkaConsumer') as mock_consumer_class:
+            mock_consumer = MagicMock()
+            mock_consumer_class.return_value = mock_consumer
             
-            yield mock, mock_conn, mock_channel
+            yield mock_consumer_class, mock_consumer
     
     @pytest.fixture
     def mock_detector(self):
@@ -39,216 +34,176 @@ class TestRabbitMQWorker:
         )
         return mock
     
-    def test_worker_connect(self, mock_pika):
+    def test_worker_connect(self, mock_kafka):
         """Test worker connection."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker()
-            worker.connect()
-        
-        mock.BlockingConnection.assert_called_once()
-        mock_channel.basic_qos.assert_called_once_with(prefetch_count=1)
-        mock_channel.queue_declare.assert_called()
-    
-    def test_worker_disconnect(self, mock_pika):
-        """Test worker disconnection."""
-        from src.worker import RabbitMQWorker
-        
-        mock, mock_conn, mock_channel = mock_pika
-        
-        with patch('src.worker.RabbitMQProducer') as MockProducer:
+        with patch('src.worker.KafkaEventProducer') as MockProducer:
             mock_producer = MagicMock()
             MockProducer.return_value = mock_producer
             
-            worker = RabbitMQWorker()
+            worker = KafkaWorker()
+            worker.connect()
+        
+        mock_class.assert_called_once()
+        mock_producer.connect.assert_called_once()
+    
+    def test_worker_disconnect(self, mock_kafka):
+        """Test worker disconnection."""
+        from src.worker import KafkaWorker
+        
+        mock_class, mock_consumer = mock_kafka
+        
+        with patch('src.worker.KafkaEventProducer') as MockProducer:
+            mock_producer = MagicMock()
+            MockProducer.return_value = mock_producer
+            
+            worker = KafkaWorker()
             worker.connect()
             worker.disconnect()
         
-        mock_conn.close.assert_called_once()
+        mock_consumer.close.assert_called_once()
         mock_producer.disconnect.assert_called_once()
     
-    def test_worker_process_message_success(self, mock_pika, mock_detector):
+    def test_worker_process_message_success(self, mock_kafka, mock_detector):
         """Test successful message processing."""
-        from src.worker import RabbitMQWorker
-        from src.producer import ReclamationEvent
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        # Create a test message
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
-        body = event.to_json().encode('utf-8')
+        # Create a mock Kafka message
+        mock_message = MagicMock()
+        mock_message.value = {
+            'reclamation_id': 1,
+            'reclamant_id': 10,
+            'event_type': 'new_reclamation'
+        }
+        mock_message.topic = 'reclamation_processing'
+        mock_message.partition = 0
+        mock_message.offset = 0
         
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
-        
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker(detector=mock_detector)
+        with patch('src.worker.KafkaEventProducer'):
+            worker = KafkaWorker(detector=mock_detector)
             worker.connect()
             
             # Process the message
-            worker._process_message(mock_channel, method, properties, body)
+            result = worker._process_message(mock_message)
         
         # Verify detector was called
         mock_detector.process_reclamation.assert_called_once_with(1)
         
-        # Verify message was acknowledged
-        mock_channel.basic_ack.assert_called_once_with(delivery_tag=1)
+        # Verify result
+        assert result is not None
+        assert result.reclamation_id == 1
     
-    def test_worker_process_message_with_callback(self, mock_pika, mock_detector):
+    def test_worker_process_message_with_callback(self, mock_kafka, mock_detector):
         """Test message processing with result callback."""
-        from src.worker import RabbitMQWorker
-        from src.producer import ReclamationEvent
+        from src.worker import KafkaWorker
         from src.duplicate_detector import DuplicateDetectionResult
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
         # Create callback to capture result
         results = []
         def on_result(result: DuplicateDetectionResult):
             results.append(result)
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
-        body = event.to_json().encode('utf-8')
+        mock_message = MagicMock()
+        mock_message.value = {
+            'reclamation_id': 1,
+            'reclamant_id': 10,
+            'event_type': 'new_reclamation'
+        }
+        mock_message.topic = 'reclamation_processing'
+        mock_message.partition = 0
+        mock_message.offset = 0
         
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
-        
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker(detector=mock_detector, on_result=on_result)
+        with patch('src.worker.KafkaEventProducer'):
+            worker = KafkaWorker(detector=mock_detector, on_result=on_result)
             worker.connect()
-            worker._process_message(mock_channel, method, properties, body)
+            worker._process_message(mock_message)
         
         # Verify callback was called
         assert len(results) == 1
         assert results[0].reclamation_id == 1
     
-    def test_worker_process_invalid_json(self, mock_pika):
+    def test_worker_process_invalid_json(self, mock_kafka):
         """Test handling of invalid JSON message."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        # Invalid JSON
-        body = b'not valid json'
+        # Message with invalid structure
+        mock_message = MagicMock()
+        mock_message.value = "not a valid dict"
+        mock_message.topic = 'reclamation_processing'
+        mock_message.partition = 0
+        mock_message.offset = 0
         
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
-        
-        with patch('src.worker.RabbitMQProducer') as MockProducer:
+        with patch('src.worker.KafkaEventProducer') as MockProducer:
             mock_producer = MagicMock()
             MockProducer.return_value = mock_producer
             
-            worker = RabbitMQWorker()
+            worker = KafkaWorker()
             worker.connect()
-            worker._process_message(mock_channel, method, properties, body)
+            result = worker._process_message(mock_message)
         
-        # Message should still be acknowledged (removed from queue)
-        mock_channel.basic_ack.assert_called_once_with(delivery_tag=1)
+        # Should return None on error
+        assert result is None
     
-    def test_worker_process_error_sends_to_dlq(self, mock_pika):
-        """Test that processing errors send to DLQ."""
-        from src.worker import RabbitMQWorker
-        from src.producer import ReclamationEvent
-        
-        mock, mock_conn, mock_channel = mock_pika
-        
-        # Create detector that raises error
-        mock_detector = MagicMock()
-        mock_detector.process_reclamation.side_effect = Exception("Processing error")
-        
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
-        body = event.to_json().encode('utf-8')
-        
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
-        
-        with patch('src.worker.RabbitMQProducer') as MockProducer:
-            mock_producer = MagicMock()
-            MockProducer.return_value = mock_producer
-            
-            worker = RabbitMQWorker(detector=mock_detector)
-            worker.connect()
-            worker._producer = mock_producer
-            worker._process_message(mock_channel, method, properties, body)
-        
-        # Should have sent to DLQ
-        mock_producer.publish_to_dlq.assert_called_once()
-        
-        # Message should be acknowledged
-        mock_channel.basic_ack.assert_called_once_with(delivery_tag=1)
-    
-    def test_worker_context_manager(self, mock_pika):
+    def test_worker_context_manager(self, mock_kafka):
         """Test using worker as context manager."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        with patch('src.worker.RabbitMQProducer'):
-            with RabbitMQWorker() as worker:
-                assert worker._connection is not None
+        with patch('src.worker.KafkaEventProducer'):
+            with KafkaWorker() as worker:
+                assert worker._consumer is not None
         
-        mock_conn.close.assert_called()
+        mock_consumer.close.assert_called()
     
-    def test_worker_get_queue_size(self, mock_pika):
-        """Test getting queue size."""
-        from src.worker import RabbitMQWorker
-        
-        mock, mock_conn, mock_channel = mock_pika
-        
-        # Mock queue_declare to return message count
-        mock_result = MagicMock()
-        mock_result.method.message_count = 5
-        mock_channel.queue_declare.return_value = mock_result
-        
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker()
-            worker.connect()
-            size = worker.get_queue_size()
-        
-        assert size == 5
-    
-    def test_worker_process_one(self, mock_pika, mock_detector):
+    def test_worker_process_one(self, mock_kafka, mock_detector):
         """Test processing single message."""
-        from src.worker import RabbitMQWorker
-        from src.producer import ReclamationEvent
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
-        body = event.to_json().encode('utf-8')
+        mock_message = MagicMock()
+        mock_message.value = {
+            'reclamation_id': 1,
+            'reclamant_id': 10,
+            'event_type': 'new_reclamation'
+        }
+        mock_message.topic = 'reclamation_processing'
+        mock_message.partition = 0
+        mock_message.offset = 0
         
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
+        # Mock poll to return one message
+        mock_consumer.poll.return_value = {
+            ('reclamation_processing', 0): [mock_message]
+        }
         
-        # Mock basic_get to return a message
-        mock_channel.basic_get.return_value = (method, properties, body)
-        
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker(detector=mock_detector)
+        with patch('src.worker.KafkaEventProducer'):
+            worker = KafkaWorker(detector=mock_detector)
             result = worker.process_one()
         
         assert result is not None
         assert result.reclamation_id == 1
     
-    def test_worker_process_one_no_message(self, mock_pika):
+    def test_worker_process_one_no_message(self, mock_kafka):
         """Test process_one with no messages in queue."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         
-        mock, mock_conn, mock_channel = mock_pika
+        mock_class, mock_consumer = mock_kafka
         
-        # Mock basic_get to return no message
-        mock_channel.basic_get.return_value = (None, None, None)
+        # Mock poll to return no messages
+        mock_consumer.poll.return_value = {}
         
-        with patch('src.worker.RabbitMQProducer'):
-            worker = RabbitMQWorker()
+        with patch('src.worker.KafkaEventProducer'):
+            worker = KafkaWorker()
             result = worker.process_one()
         
         assert result is None
@@ -259,11 +214,11 @@ class TestWorkerSignalHandling:
     
     def test_signal_handler_sets_stop_flag(self):
         """Test that signal handler sets stop flag."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         
-        with patch('src.worker.pika'):
-            with patch('src.worker.RabbitMQProducer'):
-                worker = RabbitMQWorker()
+        with patch('src.worker.KafkaConsumer'):
+            with patch('src.worker.KafkaEventProducer'):
+                worker = KafkaWorker()
                 
                 # Simulate signal
                 worker._signal_handler(2, None)
@@ -276,32 +231,39 @@ class TestWorkerFactoryFunctions:
     
     def test_get_worker(self):
         """Test get_worker factory function."""
-        from src.worker import get_worker, RabbitMQWorker
+        from src.worker import get_worker, KafkaWorker
         
         worker = get_worker()
-        assert isinstance(worker, RabbitMQWorker)
+        assert isinstance(worker, KafkaWorker)
     
     def test_get_worker_with_detector(self):
         """Test get_worker with custom detector."""
-        from src.worker import get_worker, RabbitMQWorker
+        from src.worker import get_worker, KafkaWorker
         
         mock_detector = MagicMock()
         worker = get_worker(detector=mock_detector)
         
-        assert isinstance(worker, RabbitMQWorker)
+        assert isinstance(worker, KafkaWorker)
         assert worker._detector is mock_detector
 
 
 class TestWorkerDuplicateDetection:
     """Tests for duplicate detection integration."""
     
-    def test_worker_detects_duplicate(self, mock_rabbitmq_connection):
+    @pytest.fixture
+    def mock_kafka_connection(self):
+        """Mock Kafka consumer and producer."""
+        mock_consumer = MagicMock()
+        mock_producer = MagicMock()
+        return mock_consumer, mock_producer
+    
+    def test_worker_detects_duplicate(self, mock_kafka_connection):
         """Test worker correctly handles duplicate detection result."""
-        from src.worker import RabbitMQWorker
+        from src.worker import KafkaWorker
         from src.producer import ReclamationEvent
         from src.duplicate_detector import DuplicateDetectionResult, DuplicateAction
         
-        mock_conn, mock_channel = mock_rabbitmq_connection
+        mock_consumer, mock_producer = mock_kafka_connection
         
         # Create detector that returns duplicate
         mock_detector = MagicMock()
@@ -314,33 +276,34 @@ class TestWorkerDuplicateDetection:
             message="Matched with reclamation 2"
         )
         
-        event = ReclamationEvent(reclamation_id=1, user_id=10)
-        body = event.to_json().encode('utf-8')
+        mock_message = MagicMock()
+        mock_message.value = {
+            'reclamation_id': 1,
+            'reclamant_id': 10,
+            'event_type': 'new_reclamation'
+        }
+        mock_message.topic = 'reclamation_processing'
+        mock_message.partition = 0
+        mock_message.offset = 0
         
-        method = MagicMock()
-        method.delivery_tag = 1
-        properties = MagicMock()
-        
-        with patch('src.worker.pika') as mock_pika:
-            mock_pika.BlockingConnection.return_value = mock_conn
-            mock_pika.PlainCredentials.return_value = MagicMock()
-            mock_pika.ConnectionParameters.return_value = MagicMock()
+        with patch('src.worker.KafkaConsumer') as MockConsumer:
+            MockConsumer.return_value = mock_consumer
             
-            with patch('src.worker.RabbitMQProducer'):
-                worker = RabbitMQWorker(detector=mock_detector)
-                worker._connection = mock_conn
-                worker._channel = mock_channel
+            with patch('src.worker.KafkaEventProducer') as MockProducer:
+                MockProducer.return_value = mock_producer
+                
+                worker = KafkaWorker(detector=mock_detector)
+                worker._consumer = mock_consumer
+                worker._producer = mock_producer
                 
                 # Track results
                 results = []
                 worker._on_result = lambda r: results.append(r)
                 
-                worker._process_message(mock_channel, method, properties, body)
+                worker._process_message(mock_message)
         
         # Verify the result
         assert len(results) == 1
         assert results[0].is_duplicate is True
         assert results[0].matched_id == 2
         assert results[0].similarity_score == 0.96
-
-

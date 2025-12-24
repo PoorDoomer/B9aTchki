@@ -1,7 +1,7 @@
 """
-RabbitMQ Worker for consuming and processing reclamation events.
+Kafka Worker for consuming and processing reclamation events.
 
-Consumes messages from the processing queue and executes the
+Consumes messages from the processing topic and executes the
 duplicate detection pipeline for each new reclamation.
 """
 
@@ -11,11 +11,11 @@ import signal
 import sys
 from typing import Optional, Callable
 
-import pika
-from pika.exceptions import AMQPConnectionError, AMQPChannelError
+from kafka import KafkaConsumer
+from kafka.errors import KafkaError
 
-from src.config import get_config, RabbitMQConfig
-from src.producer import ReclamationEvent, RabbitMQProducer
+from src.config import get_config, KafkaConfig
+from src.producer import ReclamationEvent, KafkaEventProducer
 from src.duplicate_detector import DuplicateDetector, DuplicateDetectionResult
 from src.embeddings import get_embedding_model
 
@@ -23,20 +23,20 @@ from src.embeddings import get_embedding_model
 logger = logging.getLogger(__name__)
 
 
-class RabbitMQWorker:
+class KafkaWorker:
     """
-    Worker for consuming reclamation events from RabbitMQ.
+    Worker for consuming reclamation events from Kafka.
     
     Implements:
-    - Reliable message consumption with acknowledgments
+    - Reliable message consumption with manual commits
     - Graceful shutdown handling
-    - Dead letter queue for failed messages
+    - Dead letter topic for failed messages
     - Connection recovery
     """
     
     def __init__(
         self,
-        config: Optional[RabbitMQConfig] = None,
+        config: Optional[KafkaConfig] = None,
         detector: Optional[DuplicateDetector] = None,
         on_result: Optional[Callable[[DuplicateDetectionResult], None]] = None
     ):
@@ -44,18 +44,16 @@ class RabbitMQWorker:
         Initialize the worker.
         
         Args:
-            config: Optional RabbitMQ configuration override.
+            config: Optional Kafka configuration override.
             detector: Optional DuplicateDetector instance.
             on_result: Optional callback for processing results.
         """
-        self._config = config or get_config().rabbitmq
+        self._config = config or get_config().kafka
         self._detector = detector
         self._on_result = on_result
-        self._connection: Optional[pika.BlockingConnection] = None
-        self._channel: Optional[pika.channel.Channel] = None
-        self._producer: Optional[RabbitMQProducer] = None
+        self._consumer: Optional[KafkaConsumer] = None
+        self._producer: Optional[KafkaEventProducer] = None
         self._should_stop = False
-        self._consumer_tag: Optional[str] = None
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -65,11 +63,6 @@ class RabbitMQWorker:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self._should_stop = True
-        if self._channel:
-            try:
-                self._channel.stop_consuming()
-            except Exception:
-                pass
     
     def _get_detector(self) -> DuplicateDetector:
         """Get or create the duplicate detector."""
@@ -79,47 +72,31 @@ class RabbitMQWorker:
     
     def connect(self) -> None:
         """
-        Establish connection to RabbitMQ.
+        Establish connection to Kafka.
         
-        Creates connection, channel, and declares queues.
+        Creates consumer and producer instances.
         """
         try:
-            credentials = pika.PlainCredentials(
-                self._config.user,
-                self._config.password
-            )
-            parameters = pika.ConnectionParameters(
-                host=self._config.host,
-                port=self._config.port,
-                credentials=credentials,
-                heartbeat=600,
-                blocked_connection_timeout=300
-            )
-            
-            self._connection = pika.BlockingConnection(parameters)
-            self._channel = self._connection.channel()
-            
-            # Set QoS - process one message at a time
-            self._channel.basic_qos(prefetch_count=1)
-            
-            # Declare queues (idempotent)
-            self._channel.queue_declare(
-                queue=self._config.queue,
-                durable=True
-            )
-            self._channel.queue_declare(
-                queue=self._config.dlq,
-                durable=True
+            self._consumer = KafkaConsumer(
+                self._config.topic,
+                bootstrap_servers=self._config.bootstrap_servers,
+                group_id=self._config.consumer_group,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                key_deserializer=lambda k: k.decode('utf-8') if k else None,
+                auto_offset_reset='earliest',
+                enable_auto_commit=False,  # Manual commit for reliability
+                max_poll_interval_ms=300000,  # 5 minutes
+                session_timeout_ms=30000
             )
             
             # Create producer for DLQ publishing
-            self._producer = RabbitMQProducer(self._config)
+            self._producer = KafkaEventProducer(self._config)
             self._producer.connect()
             
-            logger.info(f"Worker connected to RabbitMQ at {self._config.host}:{self._config.port}")
+            logger.info(f"Worker connected to Kafka at {self._config.bootstrap_servers}")
             
-        except AMQPConnectionError as e:
-            logger.error(f"Worker failed to connect to RabbitMQ: {e}")
+        except KafkaError as e:
+            logger.error(f"Worker failed to connect to Kafka: {e}")
             raise
     
     def disconnect(self) -> None:
@@ -128,34 +105,30 @@ class RabbitMQWorker:
             self._producer.disconnect()
             self._producer = None
         
-        if self._connection and self._connection.is_open:
-            self._connection.close()
-            logger.info("Worker disconnected from RabbitMQ")
+        if self._consumer:
+            self._consumer.close()
+            logger.info("Worker disconnected from Kafka")
         
-        self._connection = None
-        self._channel = None
+        self._consumer = None
     
-    def _process_message(
-        self,
-        channel: pika.channel.Channel,
-        method: pika.spec.Basic.Deliver,
-        properties: pika.spec.BasicProperties,
-        body: bytes
-    ) -> None:
+    def _process_message(self, message) -> Optional[DuplicateDetectionResult]:
         """
-        Process a single message from the queue.
+        Process a single message from Kafka.
         
         Args:
-            channel: The channel object.
-            method: Delivery method.
-            properties: Message properties.
-            body: Message body.
+            message: The Kafka message to process.
+            
+        Returns:
+            DuplicateDetectionResult if successful, None otherwise.
         """
-        delivery_tag = method.delivery_tag
-        
         try:
-            # Parse the event
-            event = ReclamationEvent.from_json(body.decode('utf-8'))
+            # Parse the event from message value
+            data = message.value
+            event = ReclamationEvent(
+                reclamation_id=data['reclamation_id'],
+                reclamant_id=data['reclamant_id'],
+                event_type=data.get('event_type', 'new_reclamation')
+            )
             logger.info(f"Processing reclamation {event.reclamation_id} for user {event.reclamant_id}")
             
             # Execute duplicate detection
@@ -178,82 +151,82 @@ class RabbitMQWorker:
                     f"(score={result.similarity_score:.4f})"
                 )
             
-            # Acknowledge successful processing
-            channel.basic_ack(delivery_tag=delivery_tag)
+            return result
             
         except json.JSONDecodeError as e:
             # Invalid JSON - send to DLQ
             logger.error(f"Invalid JSON in message: {e}")
-            self._send_to_dlq(body, f"Invalid JSON: {str(e)}")
-            channel.basic_ack(delivery_tag=delivery_tag)
+            self._send_to_dlq_raw(message, f"Invalid JSON: {str(e)}")
+            return None
             
         except Exception as e:
             # Processing error - send to DLQ
             logger.error(f"Error processing message: {e}", exc_info=True)
             
             try:
-                event = ReclamationEvent.from_json(body.decode('utf-8'))
+                data = message.value
+                event = ReclamationEvent(
+                    reclamation_id=data['reclamation_id'],
+                    reclamant_id=data['reclamant_id']
+                )
                 if self._producer:
                     self._producer.publish_to_dlq(event, str(e))
             except Exception:
-                self._send_to_dlq(body, f"Processing error: {str(e)}")
+                self._send_to_dlq_raw(message, f"Processing error: {str(e)}")
             
-            # Acknowledge to remove from main queue
-            channel.basic_ack(delivery_tag=delivery_tag)
+            return None
     
-    def _send_to_dlq(self, body: bytes, error: str) -> None:
+    def _send_to_dlq_raw(self, message, error: str) -> None:
         """Send a raw message to the DLQ."""
-        if self._channel and self._channel.is_open:
+        if self._producer and self._producer._producer:
             try:
                 dlq_message = {
-                    "original_body": body.decode('utf-8', errors='replace'),
+                    "original_value": str(message.value),
+                    "original_topic": message.topic,
+                    "original_partition": message.partition,
+                    "original_offset": message.offset,
                     "error": error
                 }
-                self._channel.basic_publish(
-                    exchange='',
-                    routing_key=self._config.dlq,
-                    body=json.dumps(dlq_message),
-                    properties=pika.BasicProperties(
-                        delivery_mode=2,
-                        content_type='application/json'
-                    )
-                )
+                self._producer._producer.send(
+                    topic=self._config.dlq_topic,
+                    value=dlq_message
+                ).get(timeout=10)
             except Exception as e:
                 logger.error(f"Failed to send to DLQ: {e}")
     
     def start(self) -> None:
         """
-        Start consuming messages from the queue.
+        Start consuming messages from the topic.
         
         Blocks until shutdown signal received or error occurs.
         """
-        logger.info(f"Starting worker, listening on queue: {self._config.queue}")
+        logger.info(f"Starting worker, listening on topic: {self._config.topic}")
         
         try:
             self.connect()
             
-            # Set up consumer
-            self._consumer_tag = self._channel.basic_consume(
-                queue=self._config.queue,
-                on_message_callback=self._process_message,
-                auto_ack=False  # Manual acknowledgment
-            )
-            
             logger.info("Worker started, waiting for messages...")
             
-            # Start consuming
             while not self._should_stop:
                 try:
-                    self._channel.start_consuming()
-                except AMQPConnectionError:
+                    # Poll for messages with timeout
+                    messages = self._consumer.poll(timeout_ms=1000)
+                    
+                    for topic_partition, records in messages.items():
+                        for message in records:
+                            if self._should_stop:
+                                break
+                            
+                            self._process_message(message)
+                            
+                            # Commit the offset after successful processing
+                            self._consumer.commit()
+                    
+                except KafkaError as e:
                     if not self._should_stop:
-                        logger.warning("Connection lost, reconnecting...")
+                        logger.warning(f"Kafka error, reconnecting: {e}")
+                        self.disconnect()
                         self.connect()
-                        self._consumer_tag = self._channel.basic_consume(
-                            queue=self._config.queue,
-                            on_message_callback=self._process_message,
-                            auto_ack=False
-                        )
             
             logger.info("Worker stopped gracefully")
             
@@ -276,53 +249,25 @@ class RabbitMQWorker:
         Returns:
             DuplicateDetectionResult if a message was processed, None if timeout.
         """
-        result_holder = [None]
-        
-        def callback(result: DuplicateDetectionResult):
-            result_holder[0] = result
-        
-        original_callback = self._on_result
-        self._on_result = callback
+        result = None
         
         try:
             self.connect()
             
-            # Try to get one message
-            method, properties, body = self._channel.basic_get(
-                queue=self._config.queue,
-                auto_ack=False
-            )
+            # Poll for one message
+            messages = self._consumer.poll(timeout_ms=int(timeout * 1000), max_records=1)
             
-            if method:
-                self._process_message(self._channel, method, properties, body)
+            for topic_partition, records in messages.items():
+                for message in records:
+                    result = self._process_message(message)
+                    self._consumer.commit()
+                    break
+                break
             
-            return result_holder[0]
+            return result
             
         finally:
-            self._on_result = original_callback
             self.disconnect()
-    
-    def get_queue_size(self) -> int:
-        """
-        Get the number of messages in the queue.
-        
-        Returns:
-            Number of messages waiting in the queue.
-        """
-        try:
-            if not self._channel or not self._channel.is_open:
-                self.connect()
-            
-            queue_state = self._channel.queue_declare(
-                queue=self._config.queue,
-                durable=True,
-                passive=True  # Don't create, just check
-            )
-            return queue_state.method.message_count
-            
-        except Exception as e:
-            logger.error(f"Failed to get queue size: {e}")
-            return -1
     
     def process_batch(self, batch_size: int = 10) -> list[DuplicateDetectionResult]:
         """
@@ -347,37 +292,46 @@ class RabbitMQWorker:
             
             processed = 0
             while processed < batch_size:
-                # Try to get one message
-                method, properties, body = self._channel.basic_get(
-                    queue=self._config.queue,
-                    auto_ack=False
-                )
+                # Poll for messages
+                messages = self._consumer.poll(timeout_ms=1000, max_records=batch_size - processed)
                 
-                if method is None:
-                    # No more messages in queue
-                    logger.info(f"Batch complete: processed {processed} messages (queue empty)")
+                if not messages:
+                    # No more messages
+                    logger.info(f"Batch complete: processed {processed} messages (no more messages)")
                     break
                 
-                try:
-                    event = ReclamationEvent.from_json(body.decode('utf-8'))
-                    logger.info(f"Batch processing reclamation {event.reclamation_id}")
-                    
-                    result = detector.process_reclamation(event.reclamation_id)
-                    results.append(result)
-                    
-                    self._channel.basic_ack(delivery_tag=method.delivery_tag)
-                    processed += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error in batch processing: {e}")
-                    self._channel.basic_ack(delivery_tag=method.delivery_tag)
-                    # Send to DLQ
-                    try:
-                        event = ReclamationEvent.from_json(body.decode('utf-8'))
-                        if self._producer:
-                            self._producer.publish_to_dlq(event, str(e))
-                    except Exception:
-                        self._send_to_dlq(body, f"Batch error: {str(e)}")
+                for topic_partition, records in messages.items():
+                    for message in records:
+                        if processed >= batch_size:
+                            break
+                        
+                        try:
+                            data = message.value
+                            event = ReclamationEvent(
+                                reclamation_id=data['reclamation_id'],
+                                reclamant_id=data['reclamant_id']
+                            )
+                            logger.info(f"Batch processing reclamation {event.reclamation_id}")
+                            
+                            result = detector.process_reclamation(event.reclamation_id)
+                            results.append(result)
+                            
+                            self._consumer.commit()
+                            processed += 1
+                            
+                        except Exception as e:
+                            logger.error(f"Error in batch processing: {e}")
+                            self._consumer.commit()
+                            # Send to DLQ
+                            try:
+                                event = ReclamationEvent(
+                                    reclamation_id=data['reclamation_id'],
+                                    reclamant_id=data['reclamant_id']
+                                )
+                                if self._producer:
+                                    self._producer.publish_to_dlq(event, str(e))
+                            except Exception:
+                                self._send_to_dlq_raw(message, f"Batch error: {str(e)}")
             
             logger.info(f"Batch processing complete: {processed} messages processed")
             return results
@@ -385,7 +339,7 @@ class RabbitMQWorker:
         finally:
             self.disconnect()
 
-    def __enter__(self) -> "RabbitMQWorker":
+    def __enter__(self) -> "KafkaWorker":
         """Context manager entry."""
         self.connect()
         return self
@@ -396,20 +350,20 @@ class RabbitMQWorker:
 
 
 def get_worker(
-    config: Optional[RabbitMQConfig] = None,
+    config: Optional[KafkaConfig] = None,
     detector: Optional[DuplicateDetector] = None
-) -> RabbitMQWorker:
+) -> KafkaWorker:
     """
-    Factory function to get a RabbitMQWorker instance.
+    Factory function to get a KafkaWorker instance.
     
     Args:
         config: Optional configuration override.
         detector: Optional DuplicateDetector instance.
     
     Returns:
-        RabbitMQWorker instance.
+        KafkaWorker instance.
     """
-    return RabbitMQWorker(config, detector)
+    return KafkaWorker(config, detector)
 
 
 def run_worker() -> None:
@@ -438,7 +392,7 @@ def run_worker() -> None:
         sys.exit(1)
     
     try:
-        worker = RabbitMQWorker()
+        worker = KafkaWorker()
         worker.start()
     except KeyboardInterrupt:
         logger.info("Worker interrupted by user")
@@ -449,5 +403,3 @@ def run_worker() -> None:
 
 if __name__ == "__main__":
     run_worker()
-
-

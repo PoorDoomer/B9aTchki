@@ -13,8 +13,10 @@ os.environ.setdefault("POSTGRES_PORT", "5432")
 os.environ.setdefault("POSTGRES_USER", "dedup_user")
 os.environ.setdefault("POSTGRES_PASSWORD", "dedup_password")
 os.environ.setdefault("POSTGRES_DB", "dedup_db")
-os.environ.setdefault("RABBITMQ_HOST", "localhost")
-os.environ.setdefault("RABBITMQ_PORT", "5672")
+os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+os.environ.setdefault("KAFKA_TOPIC", "reclamation_processing")
+os.environ.setdefault("KAFKA_DLQ_TOPIC", "dead_letter_topic")
+os.environ.setdefault("KAFKA_CONSUMER_GROUP", "dedup_workers")
 
 
 @pytest.fixture
@@ -33,10 +35,10 @@ def postgres_config():
 
 
 @pytest.fixture
-def rabbitmq_config():
-    """Provide RabbitMQ configuration."""
-    from src.config import RabbitMQConfig
-    return RabbitMQConfig()
+def kafka_config():
+    """Provide Kafka configuration."""
+    from src.config import KafkaConfig
+    return KafkaConfig()
 
 
 @pytest.fixture
@@ -100,11 +102,11 @@ def mock_db_connection():
 
 
 @pytest.fixture
-def mock_rabbitmq_connection():
-    """Mock RabbitMQ connection for unit tests."""
-    mock_conn = MagicMock()
-    mock_channel = MagicMock()
-    mock_conn.channel.return_value = mock_channel
-    return mock_conn, mock_channel
-
-
+def mock_kafka_connection():
+    """Mock Kafka connection for unit tests."""
+    mock_consumer = MagicMock()
+    mock_producer = MagicMock()
+    mock_future = MagicMock()
+    mock_future.get.return_value = None
+    mock_producer.send.return_value = mock_future
+    return mock_consumer, mock_producer

@@ -2,9 +2,9 @@
 PostgreSQL LISTEN Service for Reclamation Events.
 
 Listens for PostgreSQL NOTIFY events on the 'new_reclamation' channel
-and publishes corresponding events to RabbitMQ for processing.
+and publishes corresponding events to Kafka for processing.
 
-This service bridges PostgreSQL triggers to RabbitMQ, enabling
+This service bridges PostgreSQL triggers to Kafka, enabling
 automatic event-driven processing when new reclamations are inserted.
 """
 
@@ -19,8 +19,8 @@ from typing import Optional
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-from src.config import get_config, PostgresConfig, RabbitMQConfig
-from src.producer import RabbitMQProducer
+from src.config import get_config, PostgresConfig, KafkaConfig
+from src.producer import KafkaEventProducer
 
 
 logger = logging.getLogger(__name__)
@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 
 class PostgresListener:
     """
-    Service that listens for PostgreSQL NOTIFY events and publishes to RabbitMQ.
+    Service that listens for PostgreSQL NOTIFY events and publishes to Kafka.
     
     Implements:
     - Reliable connection with auto-reconnect
     - Graceful shutdown handling
     - JSON payload parsing
-    - RabbitMQ publishing
+    - Kafka publishing
     """
     
     CHANNEL_NAME = "new_reclamation"
@@ -43,20 +43,20 @@ class PostgresListener:
     def __init__(
         self,
         pg_config: Optional[PostgresConfig] = None,
-        rabbitmq_config: Optional[RabbitMQConfig] = None
+        kafka_config: Optional[KafkaConfig] = None
     ):
         """
         Initialize the listener.
         
         Args:
             pg_config: Optional PostgreSQL configuration override.
-            rabbitmq_config: Optional RabbitMQ configuration override.
+            kafka_config: Optional Kafka configuration override.
         """
         self._pg_config = pg_config or get_config().postgres
-        self._rabbitmq_config = rabbitmq_config or get_config().rabbitmq
+        self._kafka_config = kafka_config or get_config().kafka
         
         self._pg_conn: Optional[psycopg2.extensions.connection] = None
-        self._producer: Optional[RabbitMQProducer] = None
+        self._producer: Optional[KafkaEventProducer] = None
         self._should_stop = False
         
         # Register signal handlers for graceful shutdown
@@ -111,32 +111,32 @@ class PostgresListener:
                 logger.warning(f"Error closing PostgreSQL connection: {e}")
         self._pg_conn = None
     
-    def _connect_rabbitmq(self) -> bool:
+    def _connect_kafka(self) -> bool:
         """
-        Establish connection to RabbitMQ.
+        Establish connection to Kafka.
         
         Returns:
             True if connection successful, False otherwise.
         """
         try:
-            self._producer = RabbitMQProducer(self._rabbitmq_config)
+            self._producer = KafkaEventProducer(self._kafka_config)
             self._producer.connect()
             logger.info(
-                f"Connected to RabbitMQ at {self._rabbitmq_config.host}:{self._rabbitmq_config.port}"
+                f"Connected to Kafka at {self._kafka_config.bootstrap_servers}"
             )
             return True
             
         except Exception as e:
-            logger.error(f"Failed to connect to RabbitMQ: {e}")
+            logger.error(f"Failed to connect to Kafka: {e}")
             return False
     
-    def _disconnect_rabbitmq(self) -> None:
-        """Close RabbitMQ connection."""
+    def _disconnect_kafka(self) -> None:
+        """Close Kafka connection."""
         if self._producer:
             try:
                 self._producer.disconnect()
             except Exception as e:
-                logger.warning(f"Error disconnecting from RabbitMQ: {e}")
+                logger.warning(f"Error disconnecting from Kafka: {e}")
             self._producer = None
     
     def _handle_notification(self, payload: str) -> bool:
@@ -164,7 +164,7 @@ class PostgresListener:
                 f"reclamant_id={reclamant_id}"
             )
             
-            # Publish to RabbitMQ
+            # Publish to Kafka
             if self._producer:
                 success = self._producer.publish_new_reclamation(
                     reclamation_id=reclamation_id,
@@ -172,13 +172,13 @@ class PostgresListener:
                 )
                 
                 if success:
-                    logger.info(f"Published event to RabbitMQ for reclamation {reclamation_id}")
+                    logger.info(f"Published event to Kafka for reclamation {reclamation_id}")
                 else:
                     logger.error(f"Failed to publish event for reclamation {reclamation_id}")
                 
                 return success
             else:
-                logger.error("RabbitMQ producer not available")
+                logger.error("Kafka producer not available")
                 return False
                 
         except json.JSONDecodeError as e:
@@ -227,8 +227,8 @@ class PostgresListener:
                     continue
             
             if not self._producer:
-                if not self._connect_rabbitmq():
-                    logger.warning(f"Retrying RabbitMQ connection in {self.RECONNECT_DELAY}s...")
+                if not self._connect_kafka():
+                    logger.warning(f"Retrying Kafka connection in {self.RECONNECT_DELAY}s...")
                     time.sleep(self.RECONNECT_DELAY)
                     continue
             
@@ -252,7 +252,7 @@ class PostgresListener:
         
         logger.info("Listener stopped")
         self._disconnect_postgres()
-        self._disconnect_rabbitmq()
+        self._disconnect_kafka()
     
     def stop(self) -> None:
         """Signal the listener to stop."""
@@ -271,7 +271,7 @@ def run_listener() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    logger.info("Starting PostgreSQL -> RabbitMQ listener...")
+    logger.info("Starting PostgreSQL -> Kafka listener...")
     
     try:
         listener = PostgresListener()

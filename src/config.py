@@ -59,34 +59,23 @@ class PostgresConfig:
 
 
 @dataclass
-class RabbitMQConfig:
-    """RabbitMQ connection configuration."""
-    host: Optional[str] = None
-    port: Optional[int] = None
-    user: Optional[str] = None
-    password: Optional[str] = None
-    queue: Optional[str] = None
-    dlq: Optional[str] = None
+class KafkaConfig:
+    """Kafka connection configuration."""
+    bootstrap_servers: Optional[str] = None
+    topic: Optional[str] = None
+    dlq_topic: Optional[str] = None
+    consumer_group: Optional[str] = None
     
     def __post_init__(self):
         """Load values from environment if not provided."""
-        if self.host is None:
-            self.host = os.getenv("RABBITMQ_HOST", "localhost")
-        if self.port is None:
-            self.port = int(os.getenv("RABBITMQ_PORT", "5672"))
-        if self.user is None:
-            self.user = os.getenv("RABBITMQ_USER", "dedup_user")
-        if self.password is None:
-            self.password = os.getenv("RABBITMQ_PASSWORD", "dedup_password")
-        if self.queue is None:
-            self.queue = os.getenv("RABBITMQ_QUEUE", "reclamation_processing")
-        if self.dlq is None:
-            self.dlq = os.getenv("RABBITMQ_DLQ", "dead_letter_queue")
-    
-    @property
-    def connection_url(self) -> str:
-        """Return AMQP connection URL."""
-        return f"amqp://{self.user}:{self.password}@{self.host}:{self.port}/"
+        if self.bootstrap_servers is None:
+            self.bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        if self.topic is None:
+            self.topic = os.getenv("KAFKA_TOPIC", "reclamation_processing")
+        if self.dlq_topic is None:
+            self.dlq_topic = os.getenv("KAFKA_DLQ_TOPIC", "dead_letter_topic")
+        if self.consumer_group is None:
+            self.consumer_group = os.getenv("KAFKA_CONSUMER_GROUP", "dedup_workers")
 
 
 @dataclass
@@ -128,7 +117,7 @@ class DuplicateDetectionConfig:
 class Config:
     """Main configuration container."""
     postgres: PostgresConfig
-    rabbitmq: RabbitMQConfig
+    kafka: KafkaConfig
     ml: MLConfig
     detection: DuplicateDetectionConfig
     
@@ -137,7 +126,7 @@ class Config:
         """Load configuration from environment."""
         return cls(
             postgres=PostgresConfig(),
-            rabbitmq=RabbitMQConfig(),
+            kafka=KafkaConfig(),
             ml=MLConfig(),
             detection=DuplicateDetectionConfig()
         )
