@@ -336,7 +336,6 @@ class EmbeddingRepository:
         
         Args:
             embedding: Query embedding vector.
-            reclamant_id: User ID for grouping filter.
             exclude_id: Reclamation ID to exclude (self).
             min_score: Minimum similarity score threshold.
             time_window_days: Time window in days for search scope.
@@ -346,16 +345,15 @@ class EmbeddingRepository:
             List of SimilarityMatch objects sorted by score descending.
         """
         query = """
-            SELECT 
+            SELECT
                 r.id as reclamation_id,
                 1 - (e.embedding <=> %s::vector) as score,
                 r.motif_id
             FROM reclamation.reclamation r
             JOIN public.reclamation_embeddings e ON r.id = e.reclamation_id
-            
             WHERE
                 r.id != %s
-                AND r.created_at > NOW() - INTERVAL '%s days'
+                AND r.created_at > NOW() - INTERVAL '1 day' * %s
                 AND 1 - (e.embedding <=> %s::vector) > %s
             ORDER BY score DESC
             LIMIT %s;
@@ -366,7 +364,6 @@ class EmbeddingRepository:
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 cur.execute(query, (
                     embedding_str,
-                    reclamant_id,
                     exclude_id,
                     time_window_days,
                     embedding_str,
