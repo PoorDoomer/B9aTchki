@@ -54,6 +54,9 @@ services:
       - THRESHOLD_AUTO_DUPLICATE=${THRESHOLD_AUTO_DUPLICATE:-0.85}
       - THRESHOLD_REVIEW=${THRESHOLD_REVIEW:-0.70}
       - TIME_WINDOW_DAYS=${TIME_WINDOW_DAYS:-7}
+    depends_on:
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - dedup_network
@@ -74,6 +77,9 @@ services:
       - KAFKA_TOPIC=${KAFKA_TOPIC:-reclamation_processing}
       - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-dead_letter_topic}
       - KAFKA_CONSUMER_GROUP=${KAFKA_CONSUMER_GROUP:-dedup_workers}
+    depends_on:
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - dedup_network

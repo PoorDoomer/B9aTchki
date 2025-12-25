@@ -352,8 +352,9 @@ class EmbeddingRepository:
                 r.motif_id
             FROM reclamation.reclamation r
             JOIN public.reclamation_embeddings e ON r.id = e.reclamation_id
-            WHERE 
-                 r.id != %s
+            
+            WHERE
+                r.id != %s
                 AND r.created_at > NOW() - INTERVAL '%s days'
                 AND 1 - (e.embedding <=> %s::vector) > %s
             ORDER BY score DESC
