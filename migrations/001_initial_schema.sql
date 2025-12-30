@@ -1,98 +1,5594 @@
--- =============================================================================
--- Cross-Lingual Reclamation De-duplication Engine
--- Initial Database Schema with pgvector support
--- =============================================================================
+--
+-- PostgreSQL database dump
+--
 
--- Enable Vector Extension for semantic search
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Dumped from database version 17.5
+-- Dumped by pg_dump version 17.5
 
--- =============================================================================
--- Main Table: reclamations
--- Stores the raw reclamation tickets with free-text in French/Arabic
--- =============================================================================
-CREATE TABLE IF NOT EXISTS reclamations (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,                    -- The "User Reclame" (Grouping Key)
-    message_libre TEXT NOT NULL,                -- The raw free text (Arabic/French)
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    status VARCHAR(50) DEFAULT 'PENDING',       -- PENDING, DUPLICATE, POTENTIAL_DUPLICATE, PROCESSED
-    
-    -- Constraints
-    CONSTRAINT chk_status CHECK (status IN ('PENDING', 'DUPLICATE', 'POTENTIAL_DUPLICATE', 'PROCESSED'))
+-- Started on 2025-12-25 12:44:04
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 6 (class 2615 OID 49074)
+-- Name: admin; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA admin;
+
+
+ALTER SCHEMA admin OWNER TO postgres;
+
+--
+-- TOC entry 12 (class 2615 OID 49687)
+-- Name: document; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA document;
+
+
+ALTER SCHEMA document OWNER TO postgres;
+
+--
+-- TOC entry 9 (class 2615 OID 49311)
+-- Name: messagerie; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA messagerie;
+
+
+ALTER SCHEMA messagerie OWNER TO postgres;
+
+--
+-- TOC entry 11 (class 2615 OID 49636)
+-- Name: notification; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA notification;
+
+
+ALTER SCHEMA notification OWNER TO postgres;
+
+--
+-- TOC entry 5 (class 2615 OID 49057)
+-- Name: profilsacaps; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA profilsacaps;
+
+
+ALTER SCHEMA profilsacaps OWNER TO postgres;
+
+--
+-- TOC entry 8 (class 2615 OID 49253)
+-- Name: questionnaire; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA questionnaire;
+
+
+ALTER SCHEMA questionnaire OWNER TO postgres;
+
+--
+-- TOC entry 7 (class 2615 OID 49186)
+-- Name: reclamant; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA reclamant;
+
+
+ALTER SCHEMA reclamant OWNER TO postgres;
+
+--
+-- TOC entry 10 (class 2615 OID 49349)
+-- Name: reclamation; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA reclamation;
+
+
+ALTER SCHEMA reclamation OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 227 (class 1259 OID 49076)
+-- Name: affectation; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.affectation (
+    id bigint NOT NULL,
+    message character varying(255),
+    type character varying(255),
+    profil_affecte_id bigint,
+    CONSTRAINT affectation_type_check CHECK (((type)::text = ANY ((ARRAY['INTERNE_ACAPS'::character varying, 'EXTERNE_ACAPS'::character varying, 'INTERNE_ORGANISME'::character varying])::text[])))
 );
 
--- Index for user_id filtering (used in grouping queries)
-CREATE INDEX IF NOT EXISTS idx_reclamations_user_id ON reclamations(user_id);
 
--- Index for status filtering
-CREATE INDEX IF NOT EXISTS idx_reclamations_status ON reclamations(status);
+ALTER TABLE admin.affectation OWNER TO postgres;
 
--- Index for time-based queries (7-day window)
-CREATE INDEX IF NOT EXISTS idx_reclamations_created_at ON reclamations(created_at DESC);
+--
+-- TOC entry 226 (class 1259 OID 49075)
+-- Name: affectation_id_seq; Type: SEQUENCE; Schema: admin; Owner: postgres
+--
 
--- Composite index for common query pattern (user_id + created_at)
-CREATE INDEX IF NOT EXISTS idx_reclamations_user_created ON reclamations(user_id, created_at DESC);
-
--- =============================================================================
--- Vector Store Table: reclamation_embeddings
--- Stores the 768-dimensional LaBSE embeddings for semantic search
--- Separated for performance optimization
--- =============================================================================
-CREATE TABLE IF NOT EXISTS reclamation_embeddings (
-    reclamation_id BIGINT PRIMARY KEY REFERENCES reclamations(id) ON DELETE CASCADE,
-    embedding vector(768)                       -- 768 dimensions matches LaBSE architecture
+ALTER TABLE admin.affectation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME admin.affectation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
--- HNSW Index for State-of-the-Art approximate nearest neighbor search
--- Parameters:
---   m = 16: Maximum number of connections per layer (higher = more accurate, slower build)
---   ef_construction = 64: Size of dynamic candidate list during index construction
-CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON reclamation_embeddings 
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
 
--- =============================================================================
--- Audit Log Table: duplication_logs
--- Tracks decisions for transparency and debugging
--- =============================================================================
-CREATE TABLE IF NOT EXISTS duplication_logs (
-    id BIGSERIAL PRIMARY KEY,
-    source_reclamation_id BIGINT REFERENCES reclamations(id) ON DELETE SET NULL,
-    matched_reclamation_id BIGINT REFERENCES reclamations(id) ON DELETE SET NULL,
-    similarity_score DECIMAL(5, 4),             -- e.g., 0.9850
-    action VARCHAR(50) NOT NULL,                -- AUTO_MARK_DUPLICATE, FLAG_FOR_REVIEW
-    detected_at TIMESTAMPTZ DEFAULT NOW(),
-    
-    -- Constraints
-    CONSTRAINT chk_action CHECK (action IN ('AUTO_MARK_DUPLICATE', 'FLAG_FOR_REVIEW'))
+--
+-- TOC entry 237 (class 1259 OID 49177)
+-- Name: flyway_schema_history; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
 );
 
--- Index for querying by source reclamation
-CREATE INDEX IF NOT EXISTS idx_duplication_logs_source ON duplication_logs(source_reclamation_id);
 
--- Index for querying by matched reclamation
-CREATE INDEX IF NOT EXISTS idx_duplication_logs_matched ON duplication_logs(matched_reclamation_id);
+ALTER TABLE admin.flyway_schema_history OWNER TO postgres;
 
--- Index for time-based audit queries
-CREATE INDEX IF NOT EXISTS idx_duplication_logs_detected_at ON duplication_logs(detected_at DESC);
+--
+-- TOC entry 229 (class 1259 OID 49085)
+-- Name: permission; Type: TABLE; Schema: admin; Owner: postgres
+--
 
--- =============================================================================
--- Helper function: Calculate cosine similarity score
--- Note: pgvector's <=> operator returns cosine distance, so we compute: 1 - distance
--- =============================================================================
-CREATE OR REPLACE FUNCTION cosine_similarity(a vector, b vector)
-RETURNS FLOAT AS $$
-BEGIN
-    RETURN 1 - (a <=> b);
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+CREATE TABLE admin.permission (
+    id bigint NOT NULL,
+    code_permission character varying(255) NOT NULL,
+    libelle character varying(255) NOT NULL
+);
 
--- =============================================================================
--- Comments for documentation
--- =============================================================================
-COMMENT ON TABLE reclamations IS 'Main table storing reclamation tickets with free-text in French/Arabic';
-COMMENT ON TABLE reclamation_embeddings IS 'Vector store for 768-dim LaBSE embeddings, separated for performance';
-COMMENT ON TABLE duplication_logs IS 'Audit log tracking duplicate detection decisions';
-COMMENT ON FUNCTION cosine_similarity IS 'Helper function to compute cosine similarity from pgvector distance';
 
+ALTER TABLE admin.permission OWNER TO postgres;
+
+--
+-- TOC entry 228 (class 1259 OID 49084)
+-- Name: permission_id_seq; Type: SEQUENCE; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE admin.permission ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME admin.permission_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 231 (class 1259 OID 49093)
+-- Name: profil; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.profil (
+    id bigint NOT NULL,
+    date_debut_interim timestamp(6) without time zone,
+    date_fin_interim timestamp(6) without time zone,
+    email character varying(255),
+    est_actif boolean NOT NULL,
+    est_interne boolean NOT NULL,
+    image_url character varying(255),
+    is_interim boolean,
+    is_interim_activated boolean,
+    keycloak_id character varying(64) NOT NULL,
+    matricule character varying(255),
+    nom character varying(255),
+    organisme character varying(255),
+    password character varying(255),
+    prenom character varying(255),
+    service character varying(255) NOT NULL,
+    service_rattachee character varying(255),
+    telephone character varying(255),
+    username character varying(255) NOT NULL,
+    personne_remplacee_id bigint,
+    role_id bigint NOT NULL,
+    CONSTRAINT profil_service_check CHECK (((service)::text = ANY ((ARRAY['DPA'::character varying, 'DPS'::character varying, 'ORGANISME_EXTERNE'::character varying])::text[]))),
+    CONSTRAINT profil_service_rattachee_check CHECK (((service_rattachee)::text = ANY ((ARRAY['DPA'::character varying, 'DPS'::character varying, 'ORGANISME_EXTERNE'::character varying])::text[])))
+);
+
+
+ALTER TABLE admin.profil OWNER TO postgres;
+
+--
+-- TOC entry 230 (class 1259 OID 49092)
+-- Name: profil_id_seq; Type: SEQUENCE; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE admin.profil ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME admin.profil_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 232 (class 1259 OID 49102)
+-- Name: profil_permissions; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.profil_permissions (
+    profil_id bigint NOT NULL,
+    permissions_id bigint NOT NULL
+);
+
+
+ALTER TABLE admin.profil_permissions OWNER TO postgres;
+
+--
+-- TOC entry 233 (class 1259 OID 49107)
+-- Name: profil_sauvegarde_permissions; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.profil_sauvegarde_permissions (
+    profil_id bigint NOT NULL,
+    sauvegarde_permissions_id bigint NOT NULL
+);
+
+
+ALTER TABLE admin.profil_sauvegarde_permissions OWNER TO postgres;
+
+--
+-- TOC entry 235 (class 1259 OID 49113)
+-- Name: role; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.role (
+    id bigint NOT NULL,
+    libelle character varying(255) NOT NULL,
+    CONSTRAINT role_libelle_check CHECK (((libelle)::text = ANY ((ARRAY['CHEF_DE_DEPARTEMENT'::character varying, 'CHEF_DE_SERVICE'::character varying, 'CHARGE_DE_TRAITEMENT'::character varying, 'DIRECTEUR'::character varying, 'ADMINISTRATEUR_FONCTIONNEL'::character varying, 'INTERLOCUTEUR'::character varying, 'METIER'::character varying, 'CONSULTANT'::character varying])::text[])))
+);
+
+
+ALTER TABLE admin.role OWNER TO postgres;
+
+--
+-- TOC entry 234 (class 1259 OID 49112)
+-- Name: role_id_seq; Type: SEQUENCE; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE admin.role ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME admin.role_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 236 (class 1259 OID 49119)
+-- Name: role_permissions; Type: TABLE; Schema: admin; Owner: postgres
+--
+
+CREATE TABLE admin.role_permissions (
+    role_id bigint NOT NULL,
+    permissions_id bigint NOT NULL
+);
+
+
+ALTER TABLE admin.role_permissions OWNER TO postgres;
+
+--
+-- TOC entry 313 (class 1259 OID 49708)
+-- Name: document; Type: TABLE; Schema: document; Owner: postgres
+--
+
+CREATE TABLE document.document (
+    id bigint NOT NULL,
+    file_name character varying(255),
+    file_type character varying(255),
+    reclamation_id bigint,
+    size bigint,
+    storage_path character varying(255),
+    uploaded_at timestamp(6) without time zone
+);
+
+
+ALTER TABLE document.document OWNER TO postgres;
+
+--
+-- TOC entry 312 (class 1259 OID 49707)
+-- Name: document_id_seq; Type: SEQUENCE; Schema: document; Owner: postgres
+--
+
+CREATE SEQUENCE document.document_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE document.document_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5404 (class 0 OID 0)
+-- Dependencies: 312
+-- Name: document_id_seq; Type: SEQUENCE OWNED BY; Schema: document; Owner: postgres
+--
+
+ALTER SEQUENCE document.document_id_seq OWNED BY document.document.id;
+
+
+--
+-- TOC entry 310 (class 1259 OID 49688)
+-- Name: flyway_schema_history; Type: TABLE; Schema: document; Owner: postgres
+--
+
+CREATE TABLE document.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
+);
+
+
+ALTER TABLE document.flyway_schema_history OWNER TO postgres;
+
+--
+-- TOC entry 259 (class 1259 OID 49313)
+-- Name: attachments; Type: TABLE; Schema: messagerie; Owner: postgres
+--
+
+CREATE TABLE messagerie.attachments (
+    id bigint NOT NULL,
+    file_name character varying(255) NOT NULL,
+    file_path character varying(255) NOT NULL,
+    file_size bigint NOT NULL,
+    file_type character varying(255),
+    file_url character varying(255) NOT NULL,
+    stored_file_name character varying(255) NOT NULL,
+    message_id bigint NOT NULL
+);
+
+
+ALTER TABLE messagerie.attachments OWNER TO postgres;
+
+--
+-- TOC entry 258 (class 1259 OID 49312)
+-- Name: attachments_id_seq; Type: SEQUENCE; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE messagerie.attachments ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME messagerie.attachments_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 261 (class 1259 OID 49321)
+-- Name: conversations; Type: TABLE; Schema: messagerie; Owner: postgres
+--
+
+CREATE TABLE messagerie.conversations (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    receiver_id bigint,
+    reclamation_id bigint,
+    sender_id bigint NOT NULL,
+    type character varying(255) NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    CONSTRAINT conversations_type_check CHECK (((type)::text = ANY ((ARRAY['INTERNE_ACAPS'::character varying, 'INTERNE_METIER'::character varying, 'EXTERNE_ACAPS_RECLAMANT'::character varying, 'EXTERNE_ACAPS_METIER'::character varying])::text[])))
+);
+
+
+ALTER TABLE messagerie.conversations OWNER TO postgres;
+
+--
+-- TOC entry 260 (class 1259 OID 49320)
+-- Name: conversations_id_seq; Type: SEQUENCE; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE messagerie.conversations ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME messagerie.conversations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 263 (class 1259 OID 49328)
+-- Name: messages; Type: TABLE; Schema: messagerie; Owner: postgres
+--
+
+CREATE TABLE messagerie.messages (
+    id bigint NOT NULL,
+    confirmed boolean DEFAULT true NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    message text NOT NULL,
+    objet character varying(255),
+    receiver_id bigint,
+    sender_id bigint,
+    sender_role character varying(255),
+    updated_at timestamp(6) without time zone NOT NULL,
+    conversation_id bigint NOT NULL,
+    CONSTRAINT messages_sender_role_check CHECK (((sender_role)::text = ANY ((ARRAY['RECLAMANT'::character varying, 'CHARGE_DE_TRAITEMENT'::character varying, 'CHEF_DE_SERVICE'::character varying, 'INTERLOCUTEUR'::character varying, 'METIER'::character varying, 'CHEF_DE_DEPARTEMENT'::character varying])::text[])))
+);
+
+
+ALTER TABLE messagerie.messages OWNER TO postgres;
+
+--
+-- TOC entry 262 (class 1259 OID 49327)
+-- Name: messages_id_seq; Type: SEQUENCE; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE messagerie.messages ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME messagerie.messages_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 303 (class 1259 OID 49638)
+-- Name: notification; Type: TABLE; Schema: notification; Owner: postgres
+--
+
+CREATE TABLE notification.notification (
+    id bigint NOT NULL,
+    audience character varying(50) NOT NULL,
+    channel character varying(20) NOT NULL,
+    created_at timestamp(6) with time zone NOT NULL,
+    error_message character varying(1000),
+    event character varying(80) NOT NULL,
+    locale character varying(5) NOT NULL,
+    message_ar text,
+    message_fr text,
+    objet text NOT NULL,
+    payload_json character varying(255),
+    read boolean NOT NULL,
+    read_at timestamp(6) with time zone,
+    recipient_address character varying(255),
+    recipient_id character varying(100),
+    recipient_type character varying(20) NOT NULL,
+    reclamation_id bigint,
+    reclamation_reference character varying(100),
+    reference_interne character varying(100),
+    sent_at timestamp(6) with time zone,
+    status character varying(20) NOT NULL,
+    title_ar text,
+    title_fr text,
+    CONSTRAINT notification_audience_check CHECK (((audience)::text = ANY ((ARRAY['CLAIMANT'::character varying, 'DEPARTMENT_HEAD'::character varying, 'SERVICE_HEAD'::character varying, 'TREATMENT_OWNER'::character varying, 'BUSINESS_HANDLER'::character varying, 'INTERLOCUTOR_EAR'::character varying, 'EXTERNAL_ORG'::character varying])::text[]))),
+    CONSTRAINT notification_channel_check CHECK (((channel)::text = ANY ((ARRAY['EMAIL'::character varying, 'SMS'::character varying, 'WHATSAPP'::character varying])::text[]))),
+    CONSTRAINT notification_event_check CHECK (((event)::text = ANY ((ARRAY['CLAIM_SUBMITTED'::character varying, 'CLAIM_ASSIGNED'::character varying, 'CLAIM_RESPONSE'::character varying, 'CLAIM_REOPENED'::character varying, 'CLAIM_CLOSED_SURVEY'::character varying, 'COMPLEMENT_REQUEST'::character varying, 'RETURN_FROM_INTERLOCUTOR'::character varying, 'RETURN_FROM_ACAPS'::character varying, 'DAILY_RECAP_DEPARTMENT'::character varying, 'MONTHLY_RECAP'::character varying, 'EXTERNAL_REMINDER_T1'::character varying, 'EXTERNAL_REMINDER_T2'::character varying, 'EXTERNAL_REMINDER_T3'::character varying, 'INTERNAL_REMINDER_AFTER_CONSULTATION'::character varying])::text[]))),
+    CONSTRAINT notification_locale_check CHECK (((locale)::text = ANY ((ARRAY['FR'::character varying, 'AR'::character varying])::text[]))),
+    CONSTRAINT notification_recipient_type_check CHECK (((recipient_type)::text = ANY ((ARRAY['USER'::character varying, 'EMAIL'::character varying, 'PHONE'::character varying])::text[]))),
+    CONSTRAINT notification_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying, 'CANCELED'::character varying])::text[])))
+);
+
+
+ALTER TABLE notification.notification OWNER TO postgres;
+
+--
+-- TOC entry 302 (class 1259 OID 49637)
+-- Name: notification_id_seq; Type: SEQUENCE; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE notification.notification ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME notification.notification_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 305 (class 1259 OID 49652)
+-- Name: notification_template; Type: TABLE; Schema: notification; Owner: postgres
+--
+
+CREATE TABLE notification.notification_template (
+    id bigint NOT NULL,
+    active boolean NOT NULL,
+    audience character varying(50) NOT NULL,
+    body text NOT NULL,
+    channel character varying(20) NOT NULL,
+    created_at timestamp(6) with time zone NOT NULL,
+    event character varying(100) NOT NULL,
+    locale character varying(5) NOT NULL,
+    subject text NOT NULL,
+    updated_at timestamp(6) with time zone NOT NULL,
+    version integer NOT NULL,
+    CONSTRAINT notification_template_audience_check CHECK (((audience)::text = ANY ((ARRAY['CLAIMANT'::character varying, 'DEPARTMENT_HEAD'::character varying, 'SERVICE_HEAD'::character varying, 'TREATMENT_OWNER'::character varying, 'BUSINESS_HANDLER'::character varying, 'INTERLOCUTOR_EAR'::character varying, 'EXTERNAL_ORG'::character varying])::text[]))),
+    CONSTRAINT notification_template_channel_check CHECK (((channel)::text = ANY ((ARRAY['EMAIL'::character varying, 'SMS'::character varying, 'WHATSAPP'::character varying])::text[]))),
+    CONSTRAINT notification_template_event_check CHECK (((event)::text = ANY ((ARRAY['CLAIM_SUBMITTED'::character varying, 'CLAIM_ASSIGNED'::character varying, 'CLAIM_RESPONSE'::character varying, 'CLAIM_REOPENED'::character varying, 'CLAIM_CLOSED_SURVEY'::character varying, 'COMPLEMENT_REQUEST'::character varying, 'RETURN_FROM_INTERLOCUTOR'::character varying, 'RETURN_FROM_ACAPS'::character varying, 'DAILY_RECAP_DEPARTMENT'::character varying, 'MONTHLY_RECAP'::character varying, 'EXTERNAL_REMINDER_T1'::character varying, 'EXTERNAL_REMINDER_T2'::character varying, 'EXTERNAL_REMINDER_T3'::character varying, 'INTERNAL_REMINDER_AFTER_CONSULTATION'::character varying])::text[]))),
+    CONSTRAINT notification_template_locale_check CHECK (((locale)::text = ANY ((ARRAY['FR'::character varying, 'AR'::character varying])::text[])))
+);
+
+
+ALTER TABLE notification.notification_template OWNER TO postgres;
+
+--
+-- TOC entry 304 (class 1259 OID 49651)
+-- Name: notification_template_id_seq; Type: SEQUENCE; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE notification.notification_template ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME notification.notification_template_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 307 (class 1259 OID 49664)
+-- Name: reminder_rule; Type: TABLE; Schema: notification; Owner: postgres
+--
+
+CREATE TABLE notification.reminder_rule (
+    id bigint NOT NULL,
+    active boolean NOT NULL,
+    audience character varying(50) NOT NULL,
+    cancel_on_statuses character varying(255),
+    event character varying(80) NOT NULL,
+    offset_type character varying(10) NOT NULL,
+    offset_unit character varying(10) NOT NULL,
+    offset_value integer NOT NULL,
+    reference_status character varying(100),
+    repeat_index integer,
+    CONSTRAINT reminder_rule_audience_check CHECK (((audience)::text = ANY ((ARRAY['CLAIMANT'::character varying, 'DEPARTMENT_HEAD'::character varying, 'SERVICE_HEAD'::character varying, 'TREATMENT_OWNER'::character varying, 'BUSINESS_HANDLER'::character varying, 'INTERLOCUTOR_EAR'::character varying, 'EXTERNAL_ORG'::character varying])::text[]))),
+    CONSTRAINT reminder_rule_event_check CHECK (((event)::text = ANY ((ARRAY['CLAIM_SUBMITTED'::character varying, 'CLAIM_ASSIGNED'::character varying, 'CLAIM_RESPONSE'::character varying, 'CLAIM_REOPENED'::character varying, 'CLAIM_CLOSED_SURVEY'::character varying, 'COMPLEMENT_REQUEST'::character varying, 'RETURN_FROM_INTERLOCUTOR'::character varying, 'RETURN_FROM_ACAPS'::character varying, 'DAILY_RECAP_DEPARTMENT'::character varying, 'MONTHLY_RECAP'::character varying, 'EXTERNAL_REMINDER_T1'::character varying, 'EXTERNAL_REMINDER_T2'::character varying, 'EXTERNAL_REMINDER_T3'::character varying, 'INTERNAL_REMINDER_AFTER_CONSULTATION'::character varying])::text[]))),
+    CONSTRAINT reminder_rule_offset_type_check CHECK (((offset_type)::text = ANY ((ARRAY['BEFORE'::character varying, 'AFTER'::character varying])::text[]))),
+    CONSTRAINT reminder_rule_offset_unit_check CHECK (((offset_unit)::text = ANY ((ARRAY['MINUTES'::character varying, 'HOURS'::character varying, 'DAYS'::character varying])::text[])))
+);
+
+
+ALTER TABLE notification.reminder_rule OWNER TO postgres;
+
+--
+-- TOC entry 306 (class 1259 OID 49663)
+-- Name: reminder_rule_id_seq; Type: SEQUENCE; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE notification.reminder_rule ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME notification.reminder_rule_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 309 (class 1259 OID 49676)
+-- Name: scheduled_reminder; Type: TABLE; Schema: notification; Owner: postgres
+--
+
+CREATE TABLE notification.scheduled_reminder (
+    id bigint NOT NULL,
+    attempts integer NOT NULL,
+    audience character varying(50) NOT NULL,
+    event character varying(80) NOT NULL,
+    execute_at timestamp(6) with time zone NOT NULL,
+    last_error character varying(1000),
+    payload_json text,
+    reclamation_id bigint,
+    reclamation_reference character varying(100),
+    status character varying(20) NOT NULL,
+    CONSTRAINT scheduled_reminder_audience_check CHECK (((audience)::text = ANY ((ARRAY['CLAIMANT'::character varying, 'DEPARTMENT_HEAD'::character varying, 'SERVICE_HEAD'::character varying, 'TREATMENT_OWNER'::character varying, 'BUSINESS_HANDLER'::character varying, 'INTERLOCUTOR_EAR'::character varying, 'EXTERNAL_ORG'::character varying])::text[]))),
+    CONSTRAINT scheduled_reminder_event_check CHECK (((event)::text = ANY ((ARRAY['CLAIM_SUBMITTED'::character varying, 'CLAIM_ASSIGNED'::character varying, 'CLAIM_RESPONSE'::character varying, 'CLAIM_REOPENED'::character varying, 'CLAIM_CLOSED_SURVEY'::character varying, 'COMPLEMENT_REQUEST'::character varying, 'RETURN_FROM_INTERLOCUTOR'::character varying, 'RETURN_FROM_ACAPS'::character varying, 'DAILY_RECAP_DEPARTMENT'::character varying, 'MONTHLY_RECAP'::character varying, 'EXTERNAL_REMINDER_T1'::character varying, 'EXTERNAL_REMINDER_T2'::character varying, 'EXTERNAL_REMINDER_T3'::character varying, 'INTERNAL_REMINDER_AFTER_CONSULTATION'::character varying])::text[]))),
+    CONSTRAINT scheduled_reminder_status_check CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SENT'::character varying, 'FAILED'::character varying, 'CANCELED'::character varying])::text[])))
+);
+
+
+ALTER TABLE notification.scheduled_reminder OWNER TO postgres;
+
+--
+-- TOC entry 308 (class 1259 OID 49675)
+-- Name: scheduled_reminder_id_seq; Type: SEQUENCE; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE notification.scheduled_reminder ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME notification.scheduled_reminder_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 224 (class 1259 OID 49058)
+-- Name: acaps_profil; Type: TABLE; Schema: profilsacaps; Owner: postgres
+--
+
+CREATE TABLE profilsacaps.acaps_profil (
+    matricule character varying(255) NOT NULL,
+    email character varying(255),
+    nom character varying(255),
+    password character varying(255),
+    prenom character varying(255),
+    service character varying(255),
+    telephone character varying(255),
+    username character varying(255)
+);
+
+
+ALTER TABLE profilsacaps.acaps_profil OWNER TO postgres;
+
+--
+-- TOC entry 225 (class 1259 OID 49065)
+-- Name: flyway_schema_history; Type: TABLE; Schema: profilsacaps; Owner: postgres
+--
+
+CREATE TABLE profilsacaps.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
+);
+
+
+ALTER TABLE profilsacaps.flyway_schema_history OWNER TO postgres;
+
+--
+-- TOC entry 250 (class 1259 OID 49255)
+-- Name: answer; Type: TABLE; Schema: questionnaire; Owner: postgres
+--
+
+CREATE TABLE questionnaire.answer (
+    id bigint NOT NULL,
+    comment character varying(255),
+    reclamation_id bigint,
+    source character varying(255),
+    question_choice_id bigint,
+    CONSTRAINT answer_source_check CHECK (((source)::text = ANY ((ARRAY['PUBLIC_PORTAL'::character varying, 'EMAIL'::character varying, 'SOUMISSION_FORM'::character varying])::text[])))
+);
+
+
+ALTER TABLE questionnaire.answer OWNER TO postgres;
+
+--
+-- TOC entry 249 (class 1259 OID 49254)
+-- Name: answer_id_seq; Type: SEQUENCE; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE questionnaire.answer ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME questionnaire.answer_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 252 (class 1259 OID 49264)
+-- Name: choice; Type: TABLE; Schema: questionnaire; Owner: postgres
+--
+
+CREATE TABLE questionnaire.choice (
+    id bigint NOT NULL,
+    label character varying(255)
+);
+
+
+ALTER TABLE questionnaire.choice OWNER TO postgres;
+
+--
+-- TOC entry 251 (class 1259 OID 49263)
+-- Name: choice_id_seq; Type: SEQUENCE; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE questionnaire.choice ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME questionnaire.choice_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 257 (class 1259 OID 49300)
+-- Name: flyway_schema_history; Type: TABLE; Schema: questionnaire; Owner: postgres
+--
+
+CREATE TABLE questionnaire.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
+);
+
+
+ALTER TABLE questionnaire.flyway_schema_history OWNER TO postgres;
+
+--
+-- TOC entry 254 (class 1259 OID 49270)
+-- Name: question; Type: TABLE; Schema: questionnaire; Owner: postgres
+--
+
+CREATE TABLE questionnaire.question (
+    id bigint NOT NULL,
+    active boolean,
+    answer_mode character varying(255),
+    display_order integer,
+    editable boolean,
+    is_comment boolean,
+    kind character varying(255),
+    label character varying(255),
+    CONSTRAINT question_answer_mode_check CHECK (((answer_mode)::text = ANY ((ARRAY['DURING_SUBMISSION'::character varying, 'AFTER_CLOSED'::character varying, 'PUBLIC_PORTAL'::character varying])::text[]))),
+    CONSTRAINT question_kind_check CHECK (((kind)::text = ANY ((ARRAY['SUBMISSION'::character varying, 'FEEDBACK'::character varying, 'AFTER_CLOSED'::character varying])::text[])))
+);
+
+
+ALTER TABLE questionnaire.question OWNER TO postgres;
+
+--
+-- TOC entry 256 (class 1259 OID 49280)
+-- Name: question_choice; Type: TABLE; Schema: questionnaire; Owner: postgres
+--
+
+CREATE TABLE questionnaire.question_choice (
+    id bigint NOT NULL,
+    display_order integer,
+    choice_id bigint,
+    question_id bigint
+);
+
+
+ALTER TABLE questionnaire.question_choice OWNER TO postgres;
+
+--
+-- TOC entry 255 (class 1259 OID 49279)
+-- Name: question_choice_id_seq; Type: SEQUENCE; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE questionnaire.question_choice ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME questionnaire.question_choice_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 253 (class 1259 OID 49269)
+-- Name: question_id_seq; Type: SEQUENCE; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE questionnaire.question ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME questionnaire.question_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- TOC entry 248 (class 1259 OID 49244)
+-- Name: flyway_schema_history; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
+);
+
+
+ALTER TABLE reclamant.flyway_schema_history OWNER TO postgres;
+
+--
+-- TOC entry 239 (class 1259 OID 49188)
+-- Name: partie_lesee; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.partie_lesee (
+    id bigint NOT NULL,
+    create_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamant.partie_lesee OWNER TO postgres;
+
+--
+-- TOC entry 238 (class 1259 OID 49187)
+-- Name: partie_lesee_id_seq; Type: SEQUENCE; Schema: reclamant; Owner: postgres
+--
+
+CREATE SEQUENCE reclamant.partie_lesee_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamant.partie_lesee_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5405 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: partie_lesee_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamant; Owner: postgres
+--
+
+ALTER SEQUENCE reclamant.partie_lesee_id_seq OWNED BY reclamant.partie_lesee.id;
+
+
+--
+-- TOC entry 241 (class 1259 OID 49195)
+-- Name: qualite_reclamant; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.qualite_reclamant (
+    id bigint NOT NULL,
+    create_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamant.qualite_reclamant OWNER TO postgres;
+
+--
+-- TOC entry 240 (class 1259 OID 49194)
+-- Name: qualite_reclamant_id_seq; Type: SEQUENCE; Schema: reclamant; Owner: postgres
+--
+
+CREATE SEQUENCE reclamant.qualite_reclamant_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamant.qualite_reclamant_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5406 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: qualite_reclamant_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamant; Owner: postgres
+--
+
+ALTER SEQUENCE reclamant.qualite_reclamant_id_seq OWNED BY reclamant.qualite_reclamant.id;
+
+
+--
+-- TOC entry 243 (class 1259 OID 49202)
+-- Name: reclamant; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.reclamant (
+    id bigint NOT NULL,
+    adresse_email character varying(255),
+    adresse_postale character varying(255),
+    autre_qualite_reclamant character varying(255),
+    nom character varying(255),
+    nom_prenom_lesee character varying(255),
+    numero_piece_identite character varying(255),
+    numero_telephone character varying(255),
+    prenom character varying(255),
+    raison_sociale character varying(255),
+    partie_lesee_id bigint,
+    qualite_reclamant_id bigint,
+    tranche_age_id bigint,
+    type_piece_identite_id bigint,
+    numero_piece_identite_lesee character varying(255),
+    type_piece_identite_lesee_id bigint
+);
+
+
+ALTER TABLE reclamant.reclamant OWNER TO postgres;
+
+--
+-- TOC entry 242 (class 1259 OID 49201)
+-- Name: reclamant_id_seq; Type: SEQUENCE; Schema: reclamant; Owner: postgres
+--
+
+CREATE SEQUENCE reclamant.reclamant_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamant.reclamant_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5407 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: reclamant_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamant; Owner: postgres
+--
+
+ALTER SEQUENCE reclamant.reclamant_id_seq OWNED BY reclamant.reclamant.id;
+
+
+--
+-- TOC entry 245 (class 1259 OID 49211)
+-- Name: tranche_age; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.tranche_age (
+    id bigint NOT NULL,
+    create_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamant.tranche_age OWNER TO postgres;
+
+--
+-- TOC entry 244 (class 1259 OID 49210)
+-- Name: tranche_age_id_seq; Type: SEQUENCE; Schema: reclamant; Owner: postgres
+--
+
+CREATE SEQUENCE reclamant.tranche_age_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamant.tranche_age_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5408 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: tranche_age_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamant; Owner: postgres
+--
+
+ALTER SEQUENCE reclamant.tranche_age_id_seq OWNED BY reclamant.tranche_age.id;
+
+
+--
+-- TOC entry 247 (class 1259 OID 49218)
+-- Name: type_piece_identite; Type: TABLE; Schema: reclamant; Owner: postgres
+--
+
+CREATE TABLE reclamant.type_piece_identite (
+    id bigint NOT NULL,
+    create_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamant.type_piece_identite OWNER TO postgres;
+
+--
+-- TOC entry 246 (class 1259 OID 49217)
+-- Name: type_piece_identite_id_seq; Type: SEQUENCE; Schema: reclamant; Owner: postgres
+--
+
+CREATE SEQUENCE reclamant.type_piece_identite_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamant.type_piece_identite_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5409 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: type_piece_identite_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamant; Owner: postgres
+--
+
+ALTER SEQUENCE reclamant.type_piece_identite_id_seq OWNED BY reclamant.type_piece_identite.id;
+
+
+--
+-- TOC entry 265 (class 1259 OID 49351)
+-- Name: affectation; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.affectation (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    assigned_by_id bigint NOT NULL,
+    assigned_to_profile_id bigint,
+    message text,
+    type character varying(30) NOT NULL,
+    entreprise_id bigint,
+    organisme_id bigint,
+    reclamation_id bigint NOT NULL,
+    CONSTRAINT affectation_type_check CHECK (((type)::text = ANY ((ARRAY['INTERNE_ACAPS'::character varying, 'EXTERNE_ACAPS'::character varying, 'INTERNE_ORGANISME'::character varying])::text[])))
+);
+
+
+ALTER TABLE reclamation.affectation OWNER TO postgres;
+
+--
+-- TOC entry 264 (class 1259 OID 49350)
+-- Name: affectation_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.affectation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.affectation_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5410 (class 0 OID 0)
+-- Dependencies: 264
+-- Name: affectation_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.affectation_id_seq OWNED BY reclamation.affectation.id;
+
+
+--
+-- TOC entry 267 (class 1259 OID 49361)
+-- Name: categorie; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.categorie (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    parent_id bigint
+);
+
+
+ALTER TABLE reclamation.categorie OWNER TO postgres;
+
+--
+-- TOC entry 266 (class 1259 OID 49360)
+-- Name: categorie_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.categorie_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.categorie_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5411 (class 0 OID 0)
+-- Dependencies: 266
+-- Name: categorie_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.categorie_id_seq OWNED BY reclamation.categorie.id;
+
+
+--
+-- TOC entry 269 (class 1259 OID 49368)
+-- Name: classification; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.classification (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    commentaire character varying(255),
+    departement character varying(255),
+    email character varying(255),
+    message text,
+    motif character varying(255),
+    notification character varying(255),
+    classification_motif_id bigint,
+    reclamation_id bigint NOT NULL
+);
+
+
+ALTER TABLE reclamation.classification OWNER TO postgres;
+
+--
+-- TOC entry 268 (class 1259 OID 49367)
+-- Name: classification_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.classification_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.classification_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5412 (class 0 OID 0)
+-- Dependencies: 268
+-- Name: classification_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.classification_id_seq OWNED BY reclamation.classification.id;
+
+
+--
+-- TOC entry 271 (class 1259 OID 49377)
+-- Name: classification_motif; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.classification_motif (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamation.classification_motif OWNER TO postgres;
+
+--
+-- TOC entry 270 (class 1259 OID 49376)
+-- Name: classification_motif_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.classification_motif_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.classification_motif_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5413 (class 0 OID 0)
+-- Dependencies: 270
+-- Name: classification_motif_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.classification_motif_id_seq OWNED BY reclamation.classification_motif.id;
+
+
+--
+-- TOC entry 273 (class 1259 OID 49384)
+-- Name: dynamic_field; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.dynamic_field (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    data_type character varying(255),
+    max integer NOT NULL,
+    min integer NOT NULL
+);
+
+
+ALTER TABLE reclamation.dynamic_field OWNER TO postgres;
+
+--
+-- TOC entry 272 (class 1259 OID 49383)
+-- Name: dynamic_field_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.dynamic_field_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.dynamic_field_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5414 (class 0 OID 0)
+-- Dependencies: 272
+-- Name: dynamic_field_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.dynamic_field_id_seq OWNED BY reclamation.dynamic_field.id;
+
+
+--
+-- TOC entry 275 (class 1259 OID 49393)
+-- Name: entreprise; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.entreprise (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    parent_id bigint
+);
+
+
+ALTER TABLE reclamation.entreprise OWNER TO postgres;
+
+--
+-- TOC entry 274 (class 1259 OID 49392)
+-- Name: entreprise_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.entreprise_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.entreprise_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5415 (class 0 OID 0)
+-- Dependencies: 274
+-- Name: entreprise_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.entreprise_id_seq OWNED BY reclamation.entreprise.id;
+
+
+--
+-- TOC entry 311 (class 1259 OID 49697)
+-- Name: flyway_schema_history; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.flyway_schema_history (
+    installed_rank integer NOT NULL,
+    version character varying(50),
+    description character varying(200) NOT NULL,
+    type character varying(20) NOT NULL,
+    script character varying(1000) NOT NULL,
+    checksum integer,
+    installed_by character varying(100) NOT NULL,
+    installed_on timestamp without time zone DEFAULT now() NOT NULL,
+    execution_time integer NOT NULL,
+    success boolean NOT NULL
+);
+
+
+ALTER TABLE reclamation.flyway_schema_history OWNER TO postgres;
+
+--
+-- TOC entry 277 (class 1259 OID 49400)
+-- Name: format; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.format (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamation.format OWNER TO postgres;
+
+--
+-- TOC entry 276 (class 1259 OID 49399)
+-- Name: format_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.format_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.format_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5416 (class 0 OID 0)
+-- Dependencies: 276
+-- Name: format_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.format_id_seq OWNED BY reclamation.format.id;
+
+
+--
+-- TOC entry 279 (class 1259 OID 49407)
+-- Name: meta_data; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.meta_data (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    value character varying(255),
+    organisme_nature_dynamic_field_id bigint,
+    reclamation_dps_id bigint
+);
+
+
+ALTER TABLE reclamation.meta_data OWNER TO postgres;
+
+--
+-- TOC entry 278 (class 1259 OID 49406)
+-- Name: meta_data_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.meta_data_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.meta_data_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5417 (class 0 OID 0)
+-- Dependencies: 278
+-- Name: meta_data_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.meta_data_id_seq OWNED BY reclamation.meta_data.id;
+
+
+--
+-- TOC entry 281 (class 1259 OID 49414)
+-- Name: modification_historique; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.modification_historique (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    adresse_postale character varying(255),
+    autre_entreprise character varying(255),
+    autre_nature character varying(255),
+    autre_qualite character varying(255),
+    categorie character varying(255),
+    detail_organisme character varying(255),
+    email character varying(255),
+    entreprise character varying(255),
+    format character varying(255),
+    motif character varying(255),
+    nature character varying(255),
+    nom character varying(255),
+    nom_prenom_lessee character varying(255),
+    numero_affiliation character varying(255),
+    numero_dossier_remboursement character varying(255),
+    numero_immatriculation character varying(255),
+    numero_pension character varying(255),
+    numero_piece_identite character varying(255),
+    numero_prise_en_charge character varying(255),
+    numero_telephone character varying(255),
+    organisme character varying(255),
+    partie_lessee character varying(255),
+    prenom character varying(255),
+    profile_id bigint NOT NULL,
+    qualite character varying(255),
+    raison_social character varying(255),
+    reference_reclamation character varying(255),
+    regime character varying(255),
+    secteur character varying(255),
+    sous_categorie character varying(255),
+    tranche_age character varying(255),
+    type_entreprise character varying(255),
+    type_organisme character varying(255),
+    type_piece_identite character varying(255),
+    reclamation_id bigint NOT NULL
+);
+
+
+ALTER TABLE reclamation.modification_historique OWNER TO postgres;
+
+--
+-- TOC entry 280 (class 1259 OID 49413)
+-- Name: modification_historique_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.modification_historique_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.modification_historique_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5418 (class 0 OID 0)
+-- Dependencies: 280
+-- Name: modification_historique_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.modification_historique_id_seq OWNED BY reclamation.modification_historique.id;
+
+
+--
+-- TOC entry 283 (class 1259 OID 49423)
+-- Name: motif; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.motif (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamation.motif OWNER TO postgres;
+
+--
+-- TOC entry 282 (class 1259 OID 49422)
+-- Name: motif_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.motif_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.motif_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5419 (class 0 OID 0)
+-- Dependencies: 282
+-- Name: motif_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.motif_id_seq OWNED BY reclamation.motif.id;
+
+
+--
+-- TOC entry 285 (class 1259 OID 49430)
+-- Name: nature; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.nature (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL
+);
+
+
+ALTER TABLE reclamation.nature OWNER TO postgres;
+
+--
+-- TOC entry 284 (class 1259 OID 49429)
+-- Name: nature_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.nature_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.nature_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5420 (class 0 OID 0)
+-- Dependencies: 284
+-- Name: nature_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.nature_id_seq OWNED BY reclamation.nature.id;
+
+
+--
+-- TOC entry 287 (class 1259 OID 49437)
+-- Name: organisme; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.organisme (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    secteur character varying(255),
+    type character varying(255),
+    parent_id bigint,
+    CONSTRAINT organisme_secteur_check CHECK (((secteur)::text = ANY ((ARRAY['AMO'::character varying, 'Retraite'::character varying, 'Mutualité'::character varying])::text[])))
+);
+
+
+ALTER TABLE reclamation.organisme OWNER TO postgres;
+
+--
+-- TOC entry 286 (class 1259 OID 49436)
+-- Name: organisme_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.organisme_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.organisme_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5421 (class 0 OID 0)
+-- Dependencies: 286
+-- Name: organisme_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.organisme_id_seq OWNED BY reclamation.organisme.id;
+
+
+--
+-- TOC entry 289 (class 1259 OID 49447)
+-- Name: organisme_nature; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.organisme_nature (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    nature_id bigint NOT NULL,
+    organisme_id bigint NOT NULL
+);
+
+
+ALTER TABLE reclamation.organisme_nature OWNER TO postgres;
+
+--
+-- TOC entry 291 (class 1259 OID 49454)
+-- Name: organisme_nature_dynamic_field; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.organisme_nature_dynamic_field (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    is_required boolean NOT NULL,
+    dynamic_field_id bigint,
+    organisme_nature_id bigint
+);
+
+
+ALTER TABLE reclamation.organisme_nature_dynamic_field OWNER TO postgres;
+
+--
+-- TOC entry 290 (class 1259 OID 49453)
+-- Name: organisme_nature_dynamic_field_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.organisme_nature_dynamic_field_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.organisme_nature_dynamic_field_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5422 (class 0 OID 0)
+-- Dependencies: 290
+-- Name: organisme_nature_dynamic_field_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.organisme_nature_dynamic_field_id_seq OWNED BY reclamation.organisme_nature_dynamic_field.id;
+
+
+--
+-- TOC entry 288 (class 1259 OID 49446)
+-- Name: organisme_nature_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.organisme_nature_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.organisme_nature_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5423 (class 0 OID 0)
+-- Dependencies: 288
+-- Name: organisme_nature_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.organisme_nature_id_seq OWNED BY reclamation.organisme_nature.id;
+
+
+--
+-- TOC entry 293 (class 1259 OID 49461)
+-- Name: reclamation; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.reclamation (
+    reclamation_type character varying(10) NOT NULL,
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    description text,
+    profile_id bigint,
+    reclamant_id bigint,
+    reference_reclamation character varying(100),
+    autre_categorie character varying(255),
+    autre_entreprise character varying(255),
+    autre_motif character varying(255),
+    organisme_detail character varying(255),
+    autre_nature character varying(255),
+    format_id bigint,
+    categorie_id bigint,
+    entreprise_id bigint,
+    motif_id bigint,
+    organisme_nature_id bigint
+);
+
+
+ALTER TABLE reclamation.reclamation OWNER TO postgres;
+
+--
+-- TOC entry 292 (class 1259 OID 49460)
+-- Name: reclamation_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.reclamation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.reclamation_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5424 (class 0 OID 0)
+-- Dependencies: 292
+-- Name: reclamation_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.reclamation_id_seq OWNED BY reclamation.reclamation.id;
+
+
+--
+-- TOC entry 295 (class 1259 OID 49470)
+-- Name: status; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.status (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    background_color character varying(255),
+    background_color_icon character varying(255),
+    contexte character varying(255) DEFAULT 'ACAPS'::character varying NOT NULL,
+    description text,
+    icon character varying(255),
+    text_color character varying(255),
+    CONSTRAINT status_contexte_check CHECK (((contexte)::text = ANY ((ARRAY['RECLAMANT'::character varying, 'ACAPS'::character varying, 'ORGANISME'::character varying])::text[])))
+);
+
+
+ALTER TABLE reclamation.status OWNER TO postgres;
+
+--
+-- TOC entry 297 (class 1259 OID 49480)
+-- Name: status_history; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.status_history (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    contexte character varying(255),
+    current boolean NOT NULL,
+    reclamation_id bigint,
+    status_id bigint,
+    workflow_transition_id bigint,
+    CONSTRAINT status_history_contexte_check CHECK (((contexte)::text = ANY ((ARRAY['RECLAMANT'::character varying, 'ACAPS'::character varying, 'ORGANISME'::character varying])::text[])))
+);
+
+
+ALTER TABLE reclamation.status_history OWNER TO postgres;
+
+--
+-- TOC entry 296 (class 1259 OID 49479)
+-- Name: status_history_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.status_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.status_history_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5425 (class 0 OID 0)
+-- Dependencies: 296
+-- Name: status_history_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.status_history_id_seq OWNED BY reclamation.status_history.id;
+
+
+--
+-- TOC entry 294 (class 1259 OID 49469)
+-- Name: status_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.status_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.status_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5426 (class 0 OID 0)
+-- Dependencies: 294
+-- Name: status_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.status_id_seq OWNED BY reclamation.status.id;
+
+
+--
+-- TOC entry 299 (class 1259 OID 49488)
+-- Name: workflow; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.workflow (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    actif boolean NOT NULL,
+    libelle character varying(255) NOT NULL,
+    contexte character varying(255),
+    CONSTRAINT workflow_contexte_check CHECK (((contexte)::text = ANY ((ARRAY['RECLAMANT'::character varying, 'ACAPS'::character varying, 'ORGANISME'::character varying])::text[])))
+);
+
+
+ALTER TABLE reclamation.workflow OWNER TO postgres;
+
+--
+-- TOC entry 298 (class 1259 OID 49487)
+-- Name: workflow_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.workflow_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.workflow_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5427 (class 0 OID 0)
+-- Dependencies: 298
+-- Name: workflow_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.workflow_id_seq OWNED BY reclamation.workflow.id;
+
+
+--
+-- TOC entry 301 (class 1259 OID 49498)
+-- Name: workflow_transition; Type: TABLE; Schema: reclamation; Owner: postgres
+--
+
+CREATE TABLE reclamation.workflow_transition (
+    id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    trigger_type character varying(255),
+    from_status_id bigint,
+    to_status_id bigint,
+    workflow_id bigint
+);
+
+
+ALTER TABLE reclamation.workflow_transition OWNER TO postgres;
+
+--
+-- TOC entry 300 (class 1259 OID 49497)
+-- Name: workflow_transition_id_seq; Type: SEQUENCE; Schema: reclamation; Owner: postgres
+--
+
+CREATE SEQUENCE reclamation.workflow_transition_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE reclamation.workflow_transition_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5428 (class 0 OID 0)
+-- Dependencies: 300
+-- Name: workflow_transition_id_seq; Type: SEQUENCE OWNED BY; Schema: reclamation; Owner: postgres
+--
+
+ALTER SEQUENCE reclamation.workflow_transition_id_seq OWNED BY reclamation.workflow_transition.id;
+
+
+--
+-- TOC entry 4969 (class 2604 OID 49711)
+-- Name: document id; Type: DEFAULT; Schema: document; Owner: postgres
+--
+
+ALTER TABLE ONLY document.document ALTER COLUMN id SET DEFAULT nextval('document.document_id_seq'::regclass);
+
+
+--
+-- TOC entry 4939 (class 2604 OID 49191)
+-- Name: partie_lesee id; Type: DEFAULT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.partie_lesee ALTER COLUMN id SET DEFAULT nextval('reclamant.partie_lesee_id_seq'::regclass);
+
+
+--
+-- TOC entry 4940 (class 2604 OID 49198)
+-- Name: qualite_reclamant id; Type: DEFAULT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.qualite_reclamant ALTER COLUMN id SET DEFAULT nextval('reclamant.qualite_reclamant_id_seq'::regclass);
+
+
+--
+-- TOC entry 4941 (class 2604 OID 49205)
+-- Name: reclamant id; Type: DEFAULT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant ALTER COLUMN id SET DEFAULT nextval('reclamant.reclamant_id_seq'::regclass);
+
+
+--
+-- TOC entry 4942 (class 2604 OID 49214)
+-- Name: tranche_age id; Type: DEFAULT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.tranche_age ALTER COLUMN id SET DEFAULT nextval('reclamant.tranche_age_id_seq'::regclass);
+
+
+--
+-- TOC entry 4943 (class 2604 OID 49221)
+-- Name: type_piece_identite id; Type: DEFAULT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.type_piece_identite ALTER COLUMN id SET DEFAULT nextval('reclamant.type_piece_identite_id_seq'::regclass);
+
+
+--
+-- TOC entry 4947 (class 2604 OID 49354)
+-- Name: affectation id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.affectation ALTER COLUMN id SET DEFAULT nextval('reclamation.affectation_id_seq'::regclass);
+
+
+--
+-- TOC entry 4948 (class 2604 OID 49364)
+-- Name: categorie id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.categorie ALTER COLUMN id SET DEFAULT nextval('reclamation.categorie_id_seq'::regclass);
+
+
+--
+-- TOC entry 4949 (class 2604 OID 49371)
+-- Name: classification id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification ALTER COLUMN id SET DEFAULT nextval('reclamation.classification_id_seq'::regclass);
+
+
+--
+-- TOC entry 4950 (class 2604 OID 49380)
+-- Name: classification_motif id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification_motif ALTER COLUMN id SET DEFAULT nextval('reclamation.classification_motif_id_seq'::regclass);
+
+
+--
+-- TOC entry 4951 (class 2604 OID 49387)
+-- Name: dynamic_field id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.dynamic_field ALTER COLUMN id SET DEFAULT nextval('reclamation.dynamic_field_id_seq'::regclass);
+
+
+--
+-- TOC entry 4952 (class 2604 OID 49396)
+-- Name: entreprise id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.entreprise ALTER COLUMN id SET DEFAULT nextval('reclamation.entreprise_id_seq'::regclass);
+
+
+--
+-- TOC entry 4953 (class 2604 OID 49403)
+-- Name: format id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.format ALTER COLUMN id SET DEFAULT nextval('reclamation.format_id_seq'::regclass);
+
+
+--
+-- TOC entry 4954 (class 2604 OID 49410)
+-- Name: meta_data id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.meta_data ALTER COLUMN id SET DEFAULT nextval('reclamation.meta_data_id_seq'::regclass);
+
+
+--
+-- TOC entry 4955 (class 2604 OID 49417)
+-- Name: modification_historique id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.modification_historique ALTER COLUMN id SET DEFAULT nextval('reclamation.modification_historique_id_seq'::regclass);
+
+
+--
+-- TOC entry 4956 (class 2604 OID 49426)
+-- Name: motif id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.motif ALTER COLUMN id SET DEFAULT nextval('reclamation.motif_id_seq'::regclass);
+
+
+--
+-- TOC entry 4957 (class 2604 OID 49433)
+-- Name: nature id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.nature ALTER COLUMN id SET DEFAULT nextval('reclamation.nature_id_seq'::regclass);
+
+
+--
+-- TOC entry 4958 (class 2604 OID 49440)
+-- Name: organisme id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme ALTER COLUMN id SET DEFAULT nextval('reclamation.organisme_id_seq'::regclass);
+
+
+--
+-- TOC entry 4959 (class 2604 OID 49450)
+-- Name: organisme_nature id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature ALTER COLUMN id SET DEFAULT nextval('reclamation.organisme_nature_id_seq'::regclass);
+
+
+--
+-- TOC entry 4960 (class 2604 OID 49457)
+-- Name: organisme_nature_dynamic_field id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature_dynamic_field ALTER COLUMN id SET DEFAULT nextval('reclamation.organisme_nature_dynamic_field_id_seq'::regclass);
+
+
+--
+-- TOC entry 4961 (class 2604 OID 49464)
+-- Name: reclamation id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation ALTER COLUMN id SET DEFAULT nextval('reclamation.reclamation_id_seq'::regclass);
+
+
+--
+-- TOC entry 4962 (class 2604 OID 49473)
+-- Name: status id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status ALTER COLUMN id SET DEFAULT nextval('reclamation.status_id_seq'::regclass);
+
+
+--
+-- TOC entry 4964 (class 2604 OID 49483)
+-- Name: status_history id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status_history ALTER COLUMN id SET DEFAULT nextval('reclamation.status_history_id_seq'::regclass);
+
+
+--
+-- TOC entry 4965 (class 2604 OID 49491)
+-- Name: workflow id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow ALTER COLUMN id SET DEFAULT nextval('reclamation.workflow_id_seq'::regclass);
+
+
+--
+-- TOC entry 4966 (class 2604 OID 49501)
+-- Name: workflow_transition id; Type: DEFAULT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow_transition ALTER COLUMN id SET DEFAULT nextval('reclamation.workflow_transition_id_seq'::regclass);
+
+
+--
+-- TOC entry 5312 (class 0 OID 49076)
+-- Dependencies: 227
+-- Data for Name: affectation; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.affectation (id, message, type, profil_affecte_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5322 (class 0 OID 49177)
+-- Dependencies: 237
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+1	1	<< Flyway Baseline >>	BASELINE	<< Flyway Baseline >>	\N	postgres	2025-12-23 15:55:20.643367	0	t
+2	2	seed profile data	SQL	V2__seed_profile_data.sql	1147943190	postgres	2025-12-23 15:55:20.705828	38	t
+3	3	seed permestion role	SQL	V3__seed_permestion_role.sql	-1328234001	postgres	2025-12-23 15:55:20.795056	5	t
+\.
+
+
+--
+-- TOC entry 5314 (class 0 OID 49085)
+-- Dependencies: 229
+-- Data for Name: permission; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.permission (id, code_permission, libelle) FROM stdin;
+1	M1-FCT1	Soumission d'une réclamation
+2	M1-FCT2	Dashboard
+3	M1-FCT3	Panier
+4	M1-FCT4	Recherche d'une réclamation
+5	M1-FCT5	Affectation d'une réclamation
+6	M1-FCT5-S1	Affectation à un Organisme externe
+7	M1-FCT5-S2	Affectation à un chargé de traitement
+8	M1-FCT6	Visualisation de tous les panier
+9	M1-FCT7	Modifier une réclamation
+10	M1-FCT8	Echanges
+11	M1-FCT8-S1	Echange en interne
+12	M1-FCT8-S2	Echange en externe
+13	M2	Traitement et suivi
+14	M2-FCT1	Suivi d'une réclamation
+15	M2-FCT2	Gestion des réclamation dupliquées
+16	M2-FCT3	Gestion des réclamation liées
+17	M3	Reporting
+18	M3-FCT1	Visualisation de la page d'accueil
+19	M3-FCT2	Exportation en excel
+20	M3-FCT3	Recherche d'une réclamation
+21	M4	Administration
+22	M4-FCT1	Gestion des profils
+23	M4-FCT1-S1	Création
+24	M4-FCT1-S2	Consultation (Modification)
+25	M4-FCT2	Gestion de paramétrage
+26	M4-FCT2-S1	Gestion des champs du formulaire
+27	M4-FCT2-S2	Gestion des délais et rappels
+28	M4-FCT2-S3	Paramétrage du questionnaire
+29	M4-FCT3	Gestion des habilitations
+30	M4-FCT4	Gestion des intérims
+\.
+
+
+--
+-- TOC entry 5316 (class 0 OID 49093)
+-- Dependencies: 231
+-- Data for Name: profil; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.profil (id, date_debut_interim, date_fin_interim, email, est_actif, est_interne, image_url, is_interim, is_interim_activated, keycloak_id, matricule, nom, organisme, password, prenom, service, service_rattachee, telephone, username, personne_remplacee_id, role_id) FROM stdin;
+2	\N	\N	benkadir.aymane@acaps.ma	t	t	https://mockmind-api.uifaces.co/content/human/96.jpg	f	f	kc-user-2	M028	\N	\N	\N	\N	DPA	\N	\N	AymaneBen	\N	5
+1	\N	\N	ahmed.khalil@acaps.ma	t	t	https://mockmind-api.uifaces.co/content/cartoon/9.jpg	f	f	b951f3c8-e9e5-4362-ab29-9ceaa10ce30b	M029	\N	\N	\N	\N	DPS	\N	\N	ahmedK	\N	5
+5	\N	\N	tahiriomar@cmr.ma	t	f	/images/profile.png	f	f	fa2eb306-ea21-44a1-b7c3-fbb826ebaf38	\N	tahiri	CMR	\N	omar	ORGANISME_EXTERNE	DPS	0611111111	ota9131	\N	7
+4	\N	\N	meryem.fassi@acaps.ma	t	t	/upload/profileImages/1766636898992_download_(8).jpg	f	f	e55aa887-bbcb-43d0-a562-88e36cf99e82	M007	Fassi	\N	\N	Meryem	DPS	\N	0607123456	meryemFassi	\N	3
+3	\N	\N	amira.bourehiyi@acaps.ma	t	t	/upload/profileImages/1766636935778_1762328501587_Capture_d'écran_2025-05-17_023319.png	f	f	30446840-e7f3-4495-817b-137f9ccecf7e	M001	Bourehiyi	\N	\N	Amira	DPS	\N	0601123456	amira	\N	2
+\.
+
+
+--
+-- TOC entry 5317 (class 0 OID 49102)
+-- Dependencies: 232
+-- Data for Name: profil_permissions; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.profil_permissions (profil_id, permissions_id) FROM stdin;
+5	8
+5	4
+5	11
+5	3
+5	12
+5	14
+5	10
+5	2
+5	7
+5	13
+5	5
+4	16
+4	8
+4	18
+4	11
+4	10
+4	17
+4	2
+4	9
+4	1
+4	4
+4	3
+4	12
+4	14
+4	6
+4	20
+4	15
+4	13
+4	19
+4	5
+3	16
+3	8
+3	18
+3	11
+3	10
+3	17
+3	2
+3	9
+3	1
+3	4
+3	3
+3	12
+3	14
+3	6
+3	20
+3	15
+3	7
+3	13
+3	19
+3	5
+\.
+
+
+--
+-- TOC entry 5318 (class 0 OID 49107)
+-- Dependencies: 233
+-- Data for Name: profil_sauvegarde_permissions; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.profil_sauvegarde_permissions (profil_id, sauvegarde_permissions_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5320 (class 0 OID 49113)
+-- Dependencies: 235
+-- Data for Name: role; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.role (id, libelle) FROM stdin;
+1	CHEF_DE_DEPARTEMENT
+2	CHEF_DE_SERVICE
+3	CHARGE_DE_TRAITEMENT
+4	DIRECTEUR
+5	ADMINISTRATEUR_FONCTIONNEL
+6	CONSULTANT
+7	INTERLOCUTEUR
+8	METIER
+\.
+
+
+--
+-- TOC entry 5321 (class 0 OID 49119)
+-- Dependencies: 236
+-- Data for Name: role_permissions; Type: TABLE DATA; Schema: admin; Owner: postgres
+--
+
+COPY admin.role_permissions (role_id, permissions_id) FROM stdin;
+5	21
+5	22
+5	23
+5	24
+5	25
+5	26
+5	27
+5	28
+5	29
+5	30
+1	2
+1	3
+1	4
+1	5
+1	7
+1	8
+1	10
+1	11
+1	13
+1	14
+1	17
+1	18
+1	19
+1	20
+2	1
+2	2
+2	3
+2	4
+2	5
+2	6
+2	7
+2	8
+2	9
+2	10
+2	11
+2	12
+2	13
+2	14
+2	15
+2	16
+2	17
+2	18
+2	19
+2	20
+3	1
+3	2
+3	3
+3	4
+3	5
+3	6
+3	8
+3	9
+3	10
+3	11
+3	12
+3	13
+3	14
+3	15
+3	16
+3	17
+3	18
+3	19
+3	20
+4	2
+4	3
+4	4
+4	8
+4	13
+4	14
+4	17
+4	18
+4	20
+6	2
+6	4
+6	8
+6	14
+6	15
+6	16
+6	18
+6	19
+6	20
+7	2
+7	3
+7	4
+7	5
+7	7
+7	8
+7	10
+7	11
+7	12
+7	13
+7	14
+8	3
+8	4
+8	8
+8	10
+8	11
+8	13
+8	14
+\.
+
+
+--
+-- TOC entry 5398 (class 0 OID 49708)
+-- Dependencies: 313
+-- Data for Name: document; Type: TABLE DATA; Schema: document; Owner: postgres
+--
+
+COPY document.document (id, file_name, file_type, reclamation_id, size, storage_path, uploaded_at) FROM stdin;
+1	Document_pour_teste.docx	application/vnd.openxmlformats-officedocument.wordprocessingml.document	5	13464	/upload/reclamations/5/1766603418033_Document_pour_teste.docx	2025-12-24 20:10:18.091619
+2	Document_pour_teste.docx	application/vnd.openxmlformats-officedocument.wordprocessingml.document	6	13464	/upload/reclamations/6/1766605289716_Document_pour_teste.docx	2025-12-24 20:41:29.737685
+3	acaps-tests-p1-retours-v1.pdf	application/pdf	10	870684	/upload/reclamations/10/1766640490333_acaps-tests-p1-retours-v1.pdf	2025-12-25 06:28:10.439688
+4	images_(1).jpg	image/jpeg	10	3777	/upload/reclamations/10/1766640491451_images_(1).jpg	2025-12-25 06:28:11.473818
+5	download_(9).jpg	image/jpeg	11	3890	/upload/reclamations/11/1766653218495_download_(9).jpg	2025-12-25 10:00:18.502661
+6	acaps-tests-p1-retours-v1.pdf	application/pdf	11	870684	/upload/reclamations/11/1766653218567_acaps-tests-p1-retours-v1.pdf	2025-12-25 10:00:18.574433
+\.
+
+
+--
+-- TOC entry 5395 (class 0 OID 49688)
+-- Dependencies: 310
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: document; Owner: postgres
+--
+
+COPY document.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+0	\N	<< Flyway Schema Creation >>	SCHEMA	"document"	\N	postgres	2025-12-23 15:56:25.961001	0	t
+\.
+
+
+--
+-- TOC entry 5344 (class 0 OID 49313)
+-- Dependencies: 259
+-- Data for Name: attachments; Type: TABLE DATA; Schema: messagerie; Owner: postgres
+--
+
+COPY messagerie.attachments (id, file_name, file_path, file_size, file_type, file_url, stored_file_name, message_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5346 (class 0 OID 49321)
+-- Dependencies: 261
+-- Data for Name: conversations; Type: TABLE DATA; Schema: messagerie; Owner: postgres
+--
+
+COPY messagerie.conversations (id, created_at, receiver_id, reclamation_id, sender_id, type, updated_at) FROM stdin;
+1	2025-12-24 12:55:13.58508	\N	1	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 12:55:13.58508
+2	2025-12-24 15:19:59.583295	\N	2	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 15:19:59.583295
+3	2025-12-24 15:35:26.826953	\N	3	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 15:35:26.826953
+4	2025-12-24 15:41:27.034312	\N	4	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 15:41:27.034312
+5	2025-12-24 20:10:21.965207	\N	5	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 20:10:21.965207
+6	2025-12-24 20:41:33.102457	\N	6	3	EXTERNE_ACAPS_RECLAMANT	2025-12-24 20:41:33.102457
+7	2025-12-25 02:10:42.248332	\N	7	3	EXTERNE_ACAPS_RECLAMANT	2025-12-25 02:10:42.248332
+8	2025-12-25 03:27:26.867321	\N	8	3	EXTERNE_ACAPS_RECLAMANT	2025-12-25 03:27:26.867321
+9	2025-12-25 04:21:40.044461	\N	9	3	EXTERNE_ACAPS_RECLAMANT	2025-12-25 04:21:40.044461
+10	2025-12-25 05:30:07.024239	4	9	3	INTERNE_ACAPS	2025-12-25 05:30:07.024239
+11	2025-12-25 06:28:16.658443	\N	10	3	EXTERNE_ACAPS_RECLAMANT	2025-12-25 06:28:16.658443
+12	2025-12-25 10:00:22.265798	\N	11	3	EXTERNE_ACAPS_RECLAMANT	2025-12-25 10:00:22.265798
+\.
+
+
+--
+-- TOC entry 5348 (class 0 OID 49328)
+-- Dependencies: 263
+-- Data for Name: messages; Type: TABLE DATA; Schema: messagerie; Owner: postgres
+--
+
+COPY messagerie.messages (id, confirmed, created_at, message, objet, receiver_id, sender_id, sender_role, updated_at, conversation_id) FROM stdin;
+1	t	2025-12-24 19:49:41.665571	test	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-24 19:49:41.665571	4
+2	t	2025-12-24 19:54:39.697714	azertyui	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-24 19:54:39.698387	3
+3	t	2025-12-24 20:15:46.266039	azertyui	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-24 20:15:46.266039	5
+4	t	2025-12-24 20:44:00.104717	azertyui	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-24 20:44:00.104717	6
+5	t	2025-12-25 02:11:09.210984	qsdf	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-25 02:11:09.210984	7
+6	t	2025-12-25 03:27:54.520303	SDF	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-25 03:27:54.520303	8
+7	t	2025-12-25 05:30:15.610015	azertyu	Echange	4	3	CHEF_DE_SERVICE	2025-12-25 05:30:15.610015	10
+8	t	2025-12-25 05:31:33.239116	azer	Echange	3	4	CHARGE_DE_TRAITEMENT	2025-12-25 05:31:33.239116	10
+9	t	2025-12-25 09:39:43.387622	sdlkfj	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-25 09:39:43.387622	11
+10	t	2025-12-25 10:15:12.515512	réclamant clôtrée.	Réponse Définitive	\N	3	CHEF_DE_SERVICE	2025-12-25 10:15:12.515512	12
+\.
+
+
+--
+-- TOC entry 5388 (class 0 OID 49638)
+-- Dependencies: 303
+-- Data for Name: notification; Type: TABLE DATA; Schema: notification; Owner: postgres
+--
+
+COPY notification.notification (id, audience, channel, created_at, error_message, event, locale, message_ar, message_fr, objet, payload_json, read, read_at, recipient_address, recipient_id, recipient_type, reclamation_id, reclamation_reference, reference_interne, sent_at, status, title_ar, title_fr) FROM stdin;
+1	SERVICE_HEAD	EMAIL	2025-12-24 12:55:09.646631+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766577308605</li><li><strong>Date de soumission :</strong> 24/12/2025 12:55</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766577308605</li><li><strong>Date de soumission :</strong> 24/12/2025 12:55</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766577308605","submissionDate":"24/12/2025 12:55","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 12:55:12.478822+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+2	SERVICE_HEAD	EMAIL	2025-12-24 15:19:56.477778+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766585995121</li><li><strong>Date de soumission :</strong> 24/12/2025 15:19</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766585995121</li><li><strong>Date de soumission :</strong> 24/12/2025 15:19</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766585995121","submissionDate":"24/12/2025 15:19","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 15:19:58.566808+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+3	SERVICE_HEAD	EMAIL	2025-12-24 15:35:24.315683+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766586922816</li><li><strong>Date de soumission :</strong> 24/12/2025 15:35</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766586922816</li><li><strong>Date de soumission :</strong> 24/12/2025 15:35</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766586922816","submissionDate":"24/12/2025 15:35","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 15:35:26.375457+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+4	CLAIMANT	EMAIL	2025-12-24 15:35:27.010043+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766586922816</strong></li><li>Date de soumission : <strong>24/12/2025 15:35</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766586922816</strong></li><li>Date de soumission : <strong>24/12/2025 15:35</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"userName":"Roumaissae Zaoui","submissionDate":"24/12/2025 15:35","portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766586922816"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-24 15:35:29.354858+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+5	SERVICE_HEAD	EMAIL	2025-12-24 15:41:24.519355+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766587283263</li><li><strong>Date de soumission :</strong> 24/12/2025 15:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766587283263</li><li><strong>Date de soumission :</strong> 24/12/2025 15:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766587283263","submissionDate":"24/12/2025 15:41","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 15:41:26.455617+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+6	CLAIMANT	EMAIL	2025-12-24 15:41:27.265157+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766587283263</strong></li><li>Date de soumission : <strong>24/12/2025 15:41</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766587283263</strong></li><li>Date de soumission : <strong>24/12/2025 15:41</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"reclamationNumber":"DPS-1766587283263","userName":"Roumaissae Zaoui","submissionDate":"24/12/2025 15:41","portalLink":"http://localhost:4200/portail/"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-24 15:41:29.764827+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+7	SERVICE_HEAD	EMAIL	2025-12-24 19:49:42.429381+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766587283263</li><li><strong>Date de soumission :</strong> 24/12/2025 15:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766587283263</li><li><strong>Date de soumission :</strong> 24/12/2025 15:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766587283263","submissionDate":"24/12/2025 15:41","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 19:49:45.19947+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+8	SERVICE_HEAD	EMAIL	2025-12-24 19:54:40.00095+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766586922816</li><li><strong>Date de soumission :</strong> 24/12/2025 15:35</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766586922816</li><li><strong>Date de soumission :</strong> 24/12/2025 15:35</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766586922816","submissionDate":"24/12/2025 15:35","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 19:54:42.009533+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+9	SERVICE_HEAD	EMAIL	2025-12-24 20:10:19.172743+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766603417164</li><li><strong>Date de soumission :</strong> 24/12/2025 20:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766603417164</li><li><strong>Date de soumission :</strong> 24/12/2025 20:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766603417164","submissionDate":"24/12/2025 20:10","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 20:10:21.456434+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+10	CLAIMANT	EMAIL	2025-12-24 20:10:22.15974+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766603417164</strong></li><li>Date de soumission : <strong>24/12/2025 20:10</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766603417164</strong></li><li>Date de soumission : <strong>24/12/2025 20:10</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"submissionDate":"24/12/2025 20:10","portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766603417164","userName":"Roumaissae Zaoui"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-24 20:10:24.267687+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+11	SERVICE_HEAD	EMAIL	2025-12-24 20:15:46.74137+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766603417164</li><li><strong>Date de soumission :</strong> 24/12/2025 20:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766603417164</li><li><strong>Date de soumission :</strong> 24/12/2025 20:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766603417164","submissionDate":"24/12/2025 20:10","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 20:15:48.884082+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+12	SERVICE_HEAD	EMAIL	2025-12-24 20:41:30.554964+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766605289326</li><li><strong>Date de soumission :</strong> 24/12/2025 20:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766605289326</li><li><strong>Date de soumission :</strong> 24/12/2025 20:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766605289326","submissionDate":"24/12/2025 20:41","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 20:41:32.852269+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+13	CLAIMANT	EMAIL	2025-12-24 20:41:33.212136+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766605289326</strong></li><li>Date de soumission : <strong>24/12/2025 20:41</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766605289326</strong></li><li>Date de soumission : <strong>24/12/2025 20:41</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"submissionDate":"24/12/2025 20:41","portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766605289326","userName":"Roumaissae Zaoui"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-24 20:41:35.422325+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+14	SERVICE_HEAD	EMAIL	2025-12-24 20:44:00.275695+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766605289326</li><li><strong>Date de soumission :</strong> 24/12/2025 20:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766605289326</li><li><strong>Date de soumission :</strong> 24/12/2025 20:41</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766605289326","submissionDate":"24/12/2025 20:41","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-24 20:44:02.473609+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+15	SERVICE_HEAD	EMAIL	2025-12-25 02:10:39.275296+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766625038825</li><li><strong>Date de soumission :</strong> 25/12/2025 02:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766625038825</li><li><strong>Date de soumission :</strong> 25/12/2025 02:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766625038825","submissionDate":"25/12/2025 02:10","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 02:10:42.080139+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+16	CLAIMANT	EMAIL	2025-12-25 02:10:42.322183+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766625038825</strong></li><li>Date de soumission : <strong>25/12/2025 02:10</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766625038825</strong></li><li>Date de soumission : <strong>25/12/2025 02:10</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"submissionDate":"25/12/2025 02:10","portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766625038825","userName":"Roumaissae Zaoui"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-25 02:10:44.700721+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+17	SERVICE_HEAD	EMAIL	2025-12-25 02:11:09.315488+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766625038825</li><li><strong>Date de soumission :</strong> 25/12/2025 02:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766625038825</li><li><strong>Date de soumission :</strong> 25/12/2025 02:10</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766625038825","submissionDate":"25/12/2025 02:10","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 02:11:11.46567+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+18	SERVICE_HEAD	EMAIL	2025-12-25 03:27:24.304507+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766629643783</li><li><strong>Date de soumission :</strong> 25/12/2025 03:27</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766629643783</li><li><strong>Date de soumission :</strong> 25/12/2025 03:27</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766629643783","submissionDate":"25/12/2025 03:27","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 03:27:26.617609+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+19	CLAIMANT	EMAIL	2025-12-25 03:27:26.961166+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766629643783</strong></li><li>Date de soumission : <strong>25/12/2025 03:27</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766629643783</strong></li><li>Date de soumission : <strong>25/12/2025 03:27</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"submissionDate":"25/12/2025 03:27","portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766629643783","userName":"Roumaissae Zaoui"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-25 03:27:28.894602+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+20	SERVICE_HEAD	EMAIL	2025-12-25 03:27:54.602271+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766629643783</li><li><strong>Date de soumission :</strong> 25/12/2025 03:27</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766629643783</li><li><strong>Date de soumission :</strong> 25/12/2025 03:27</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766629643783","submissionDate":"25/12/2025 03:27","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 03:27:58.120965+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+21	SERVICE_HEAD	EMAIL	2025-12-25 04:21:37.599444+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766632897296</li><li><strong>Date de soumission :</strong> 25/12/2025 04:21</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766632897296</li><li><strong>Date de soumission :</strong> 25/12/2025 04:21</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766632897296","submissionDate":"25/12/2025 04:21","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 04:21:39.854574+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+22	CLAIMANT	EMAIL	2025-12-25 04:21:40.136261+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766632897296</strong></li><li>Date de soumission : <strong>25/12/2025 04:21</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766632897296</strong></li><li>Date de soumission : <strong>25/12/2025 04:21</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"portalLink":"http://localhost:4200/portail/","submissionDate":"25/12/2025 04:21","userName":"Roumaissae Zaoui","reclamationNumber":"DPS-1766632897296"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-25 04:21:42.008755+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+23	TREATMENT_OWNER	EMAIL	2025-12-25 05:31:05.467098+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Meryem Fassi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766632897296</li><li><strong>Date de soumission :</strong> 25/12/2025 04:21</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Meryem Fassi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766632897296</li><li><strong>Date de soumission :</strong> 25/12/2025 04:21</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766632897296","submissionDate":"25/12/2025 04:21","userName":"Meryem Fassi"}	f	\N	meryem.fassi@acaps.ma	M007	EMAIL	\N	\N	\N	2025-12-25 05:31:08.709165+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+24	SERVICE_HEAD	EMAIL	2025-12-25 06:28:13.118263+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766640489406</li><li><strong>Date de soumission :</strong> 25/12/2025 06:28</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766640489406</li><li><strong>Date de soumission :</strong> 25/12/2025 06:28</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766640489406","submissionDate":"25/12/2025 06:28","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 06:28:16.138883+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+27	SERVICE_HEAD	EMAIL	2025-12-25 10:00:18.773558+01	\N	CLAIM_ASSIGNED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766653218293</li><li><strong>Date de soumission :</strong> 25/12/2025 10:00</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766653218293</li><li><strong>Date de soumission :</strong> 25/12/2025 10:00</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Nouvelle reclamation a traiter	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766653218293","submissionDate":"25/12/2025 10:00","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 10:00:22.135488+01	SENT	Objet : Nouvelle reclamation a traiter	Objet : Nouvelle reclamation a traiter
+25	CLAIMANT	EMAIL	2025-12-25 06:28:17.061435+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766640489406</strong></li><li>Date de soumission : <strong>25/12/2025 06:28</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766640489406</strong></li><li>Date de soumission : <strong>25/12/2025 06:28</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"portalLink":"http://localhost:4200/portail/","submissionDate":"25/12/2025 06:28","userName":"Roumaissae Zaoui","reclamationNumber":"DPS-1766640489406"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-25 06:28:20.333294+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+26	SERVICE_HEAD	EMAIL	2025-12-25 09:39:43.850215+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766640489406</li><li><strong>Date de soumission :</strong> 25/12/2025 06:28</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766640489406</li><li><strong>Date de soumission :</strong> 25/12/2025 06:28</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766640489406","submissionDate":"25/12/2025 06:28","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 09:39:45.724457+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+28	CLAIMANT	EMAIL	2025-12-25 10:00:22.343092+01	\N	CLAIM_SUBMITTED	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766653218293</strong></li><li>Date de soumission : <strong>25/12/2025 10:00</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>DPS-1766653218293</strong></li><li>Date de soumission : <strong>25/12/2025 10:00</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='http://localhost:4200/portail/'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	Objet : Confirmation de reception de votre reclamation	{"portalLink":"http://localhost:4200/portail/","submissionDate":"25/12/2025 10:00","userName":"salman boualouchi","reclamationNumber":"DPS-1766653218293"}	f	\N	khalillmkhantar@gmail.com	\N	EMAIL	\N	\N	\N	2025-12-25 10:00:24.011262+01	SENT	Objet : Confirmation de reception de votre reclamation	Objet : Confirmation de reception de votre reclamation
+29	SERVICE_HEAD	EMAIL	2025-12-25 10:15:12.905177+01	\N	CLAIM_RESPONSE	FR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766653218293</li><li><strong>Date de soumission :</strong> 25/12/2025 10:00</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour Amira Bourehiyi,</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> DPS-1766653218293</li><li><strong>Date de soumission :</strong> 25/12/2025 10:00</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='http://localhost:4200/portail/'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	Objet : Reponse a une reclamation	{"portalLink":"http://localhost:4200/portail/","reclamationNumber":"DPS-1766653218293","submissionDate":"25/12/2025 10:00","userName":"Amira Bourehiyi"}	f	\N	amira.bourehiyi@acaps.ma	M001	EMAIL	\N	\N	\N	2025-12-25 10:15:16.486145+01	SENT	Objet : Reponse a une reclamation	Objet : Reponse a une reclamation
+\.
+
+
+--
+-- TOC entry 5390 (class 0 OID 49652)
+-- Dependencies: 305
+-- Data for Name: notification_template; Type: TABLE DATA; Schema: notification; Owner: postgres
+--
+
+COPY notification.notification_template (id, active, audience, body, channel, created_at, event, locale, subject, updated_at, version) FROM stdin;
+1	t	TREATMENT_OWNER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.415001+01	CLAIM_ASSIGNED	FR	Objet : Nouvelle reclamation a traiter	2025-12-23 15:56:23.415001+01	1
+2	t	TREATMENT_OWNER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.432227+01	CLAIM_RESPONSE	FR	Objet : Reponse a une reclamation	2025-12-23 15:56:23.432227+01	1
+3	t	TREATMENT_OWNER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reouverture d'une reclamation</h2><p>Bonjour {{userName}},</p><p>La reclamation numero {{reclamationNumber}} a ete reouverte par le reclamant.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission initiale :</strong> {{initialSubmissionDate}}</li><li><strong>Date de reouverture :</strong> {{reopenDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner les nouveaux commentaires et traiter cette reclamation reouverte.</p><p>Merci de votre diligence.</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.446825+01	CLAIM_REOPENED	FR	Objet : Reouverture de la reclamation numero {{reclamationNumber}}	2025-12-23 15:56:23.446825+01	1
+4	t	TREATMENT_OWNER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Rappel - reclamation en attente</h2><p>Bonjour,</p><p>Nous vous rappelons que la reclamation n° {{reclamationNumber}}, soumise le {{submissionDate}}, affectee le {{assignmentDate}}, est toujours en attente de traitement.</p><p style='margin-top:12px'>Merci de vous connecter a la plateforme pour la traiter : <a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.459415+01	INTERNAL_REMINDER_AFTER_CONSULTATION	FR	Objet : Rappel - Reclamation {{reclamationNumber}} en attente de traitement	2025-12-23 15:56:23.459415+01	1
+5	t	TREATMENT_OWNER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Recapitulatif mensuel des reclamations</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations pour le mois de {{month}} :</p><p><strong>Reclamations en cours :</strong></p><ul><li>Nombre total de reclamations en cours : <strong>{{totalInProgress}}</strong></li><li>Nombre reclamations repondues : <strong>{{totalResponded}}</strong></li><li>Nombre total de reclamations cloturees : <strong>{{totalClosed}}</strong></li></ul><p style='margin-top:16px'>Veuillez vous connecter a la plateforme de gestion des reclamations pour plus de details et pour traiter les reclamations en cours.</p><p>Merci pour votre engagement et votre travail continu.</p><p style='margin-top:12px'><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.473809+01	MONTHLY_RECAP	FR	Objet : Recapitulatif mensuel des reclamations	2025-12-23 15:56:23.473809+01	1
+6	t	BUSINESS_HANDLER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.494588+01	CLAIM_ASSIGNED	FR	Objet : Nouvelle reclamation a traiter	2025-12-23 15:56:23.494588+01	1
+7	t	BUSINESS_HANDLER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Retour interlocuteur</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.509234+01	RETURN_FROM_INTERLOCUTOR	FR	Objet : Retour interlocuteur	2025-12-23 15:56:23.509234+01	1
+8	t	BUSINESS_HANDLER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reouverture de reclamation</h2><p>Bonjour {{userName}},</p><p>La reclamation n°{{reclamationNumber}} a ete reouverte.</p><ul><li>Date de soumission initiale : <strong>{{initialSubmissionDate}}</strong></li><li>Date de reouverture : <strong>{{reopenDate}}</strong></li></ul><p>Merci de vous connecter a la plateforme : <a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.53012+01	CLAIM_REOPENED	FR	Objet : Reouverture de la reclamation {{reclamationNumber}}	2025-12-23 15:56:23.53012+01	1
+9	t	BUSINESS_HANDLER	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Recapitulatif mensuel</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations pour le mois de {{month}} :</p><ul><li>En cours : <strong>{{totalInProgress}}</strong></li><li>Repondues : <strong>{{totalResponded}}</strong></li><li>Cloturees : <strong>{{totalClosed}}</strong></li></ul><p style='margin-top:12px'><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.555858+01	MONTHLY_RECAP	FR	Objet : Recapitulatif mensuel des reclamations	2025-12-23 15:56:23.555858+01	1
+10	t	DEPARTMENT_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.589918+01	CLAIM_ASSIGNED	FR	Objet : Nouvelle reclamation a traiter	2025-12-23 15:56:23.589918+01	1
+11	t	DEPARTMENT_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.619924+01	CLAIM_RESPONSE	FR	Objet : Reponse a une reclamation	2025-12-23 15:56:23.619924+01	1
+12	t	DEPARTMENT_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reouverture d'une reclamation</h2><p>Bonjour {{userName}},</p><p>La reclamation numero {{reclamationNumber}} a ete reouverte par le reclamant.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission initiale :</strong> {{initialSubmissionDate}}</li><li><strong>Date de reouverture :</strong> {{reopenDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner les nouveaux commentaires et traiter cette reclamation reouverte.</p><p>Merci de votre diligence.</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.638963+01	CLAIM_REOPENED	FR	Objet : Reouverture de la reclamation numero {{reclamationNumber}}	2025-12-23 15:56:23.638963+01	1
+13	t	DEPARTMENT_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} h4{color:#2c3e50;margin:16px 0 6px;}</style></head><body><div class='container'><h2>Recapitulatif journalier des reclamations</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations du {{previousDate}} a 17h au {{currentDate}} a 17h :</p><h4>Reclamations nouvelles ({{newClaimsCount}})</h4>{{newClaimsTable}}<h4>Reclamations cloturees ({{closedClaimsCount}})</h4>{{closedClaimsTable}}<p style='margin-top:16px'>Veuillez vous connecter a la plateforme de gestion des reclamations pour plus de details :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.652351+01	DAILY_RECAP_DEPARTMENT	FR	Objet : Recapitulatif journalier des reclamations	2025-12-23 15:56:23.652351+01	1
+14	t	DEPARTMENT_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Recapitulatif mensuel des reclamations</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations pour le mois de {{month}} :</p><p><strong>Reclamations en cours :</strong></p><ul><li>Nombre total de reclamations en cours : <strong>{{totalInProgress}}</strong></li><li>Nombre repondues : <strong>{{totalResponded}}</strong></li><li>Nombre total de reclamations cloturees : <strong>{{totalClosed}}</strong></li></ul><p style='margin-top:16px'>Veuillez vous connecter a la plateforme de gestion des reclamations pour plus de details et pour traiter les reclamations en cours.</p><p>Merci pour votre engagement et votre travail continu.</p><p style='margin-top:12px'><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.667799+01	MONTHLY_RECAP	FR	Objet : Recapitulatif mensuel des reclamations	2025-12-23 15:56:23.667799+01	1
+15	t	SERVICE_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.684144+01	CLAIM_ASSIGNED	FR	Objet : Nouvelle reclamation a traiter	2025-12-23 15:56:23.684144+01	1
+16	t	SERVICE_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une reponse a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.7004+01	CLAIM_RESPONSE	FR	Objet : Reponse a une reclamation	2025-12-23 15:56:23.7004+01	1
+17	t	SERVICE_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reouverture d'une reclamation</h2><p>Bonjour {{userName}},</p><p>La reclamation numero {{reclamationNumber}} a ete reouverte par le reclamant.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission initiale :</strong> {{initialSubmissionDate}}</li><li><strong>Date de reouverture :</strong> {{reopenDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner les nouveaux commentaires et traiter cette reclamation reouverte.</p><p>Merci de votre diligence.</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.714474+01	CLAIM_REOPENED	FR	Objet : Reouverture de la reclamation numero {{reclamationNumber}}	2025-12-23 15:56:23.714474+01	1
+18	t	SERVICE_HEAD	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Recapitulatif mensuel des reclamations</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations pour le mois de {{month}} :</p><p><strong>Reclamations en cours :</strong></p><ul><li>Nombre total de reclamations en cours : <strong>{{totalInProgress}}</strong></li><li>Nombre repondues : <strong>{{totalResponded}}</strong></li><li>Nombre total de reclamations cloturees : <strong>{{totalClosed}}</strong></li></ul><p style='margin-top:16px'>Veuillez vous connecter a la plateforme de gestion des reclamations pour plus de details et pour traiter les reclamations en cours.</p><p>Merci pour votre engagement et votre travail continu.</p><p style='margin-top:12px'><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.73088+01	MONTHLY_RECAP	FR	Objet : Recapitulatif mensuel des reclamations	2025-12-23 15:56:23.73088+01	1
+19	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Une nouvelle reclamation a traiter</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une nouvelle reclamation a traiter.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.754782+01	CLAIM_ASSIGNED	FR	Objet : Nouvelle reclamation a traiter	2025-12-23 15:56:23.754782+01	1
+20	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reponse a une reclamation</h2><p>Bonjour {{userName}},</p><p>Vous avez recu une reponse en interne a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reponse :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.771365+01	RETURN_FROM_INTERLOCUTOR	FR	Objet : Reponse a une reclamation	2025-12-23 15:56:23.771365+01	1
+21	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Reouverture d'une reclamation</h2><p>Bonjour {{userName}},</p><p>Vous avez recu un retour en externe a une reclamation.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter ce retour :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.789267+01	RETURN_FROM_ACAPS	FR	Objet : Reouverture de la reclamation n° {{reclamationNumber}}	2025-12-23 15:56:23.789267+01	1
+22	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Rappel - Reclamation en attente de traitement</h2><p>Bonjour,</p><p>Nous vous rappelons que le delai de traitement de la reclamation n°{{reclamationNumber}}, affectee a votre organisme le {{assignmentDate}}, expire dans 48 heures.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation dans les plus brefs delais :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Merci de votre collaboration.</p><p>Cordialement,</p><p>L'equipe de Gestion des Reclamations</p></div></body></html>	EMAIL	2025-12-23 15:56:23.823417+01	EXTERNAL_REMINDER_T1	FR	Objet : Rappel - Reclamation n° {{reclamationNumber}} en attente de traitement	2025-12-23 15:56:23.823417+01	1
+23	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Rappel - Reclamation en attente de traitement</h2><p>Bonjour,</p><p>Nous vous rappelons que la reclamation n°{{reclamationNumber}}, affectee a votre organisme le {{assignmentDate}}, est toujours en attente de traitement.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation dans les plus brefs delais :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Merci de votre collaboration.</p><p>Cordialement,</p><p>L'equipe de Gestion des Reclamations</p></div></body></html>	EMAIL	2025-12-23 15:56:23.840942+01	EXTERNAL_REMINDER_T2	FR	Objet : Rappel - Reclamation n° {{reclamationNumber}} en attente de traitement	2025-12-23 15:56:23.840942+01	1
+24	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Rappel - Reclamation en attente de traitement</h2><p>Bonjour,</p><p>Nous vous rappelons que la reclamation n°{{reclamationNumber}}, affectee a votre organisme le {{assignmentDate}}, est toujours en attente de traitement.</p><p><strong>Details de la reclamation :</strong></p><ul><li><strong>Numero de reclamation :</strong> {{reclamationNumber}}</li><li><strong>Date de soumission :</strong> {{submissionDate}}</li></ul><p>Veuillez vous connecter a la plateforme de gestion des reclamations pour examiner et traiter cette reclamation dans les plus brefs delais :</p><p><a href='{{portalLink}}'>Acceder au portail</a></p><p>Merci de votre collaboration.</p><p>Cordialement,</p><p>L'equipe de Gestion des Reclamations</p></div></body></html>	EMAIL	2025-12-23 15:56:23.853516+01	EXTERNAL_REMINDER_T3	FR	Objet : Rappel - Reclamation n° {{reclamationNumber}} en attente de traitement	2025-12-23 15:56:23.853516+01	1
+25	t	INTERLOCUTOR_EAR	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Recapitulatif mensuel des reclamations</h2><p>Bonjour {{userName}},</p><p>Voici le recapitulatif des reclamations pour le mois de {{month}} :</p><p><strong>Reclamations en cours :</strong></p><ul><li>Nombre total de reclamations en cours : <strong>{{totalInProgress}}</strong></li><li>Nombre reclamations repondues : <strong>{{totalResponded}}</strong></li><li>Nombre total de reclamations cloturees : <strong>{{totalClosed}}</strong></li></ul><p style='margin-top:16px'>Veuillez vous connecter a la plateforme de gestion des reclamations pour plus de details et pour traiter les reclamations en cours.</p><p>Merci pour votre engagement et votre travail continu.</p><p style='margin-top:12px'><a href='{{portalLink}}'>Acceder au portail</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.869454+01	MONTHLY_RECAP	FR	Objet : Recapitulatif mensuel des reclamations	2025-12-23 15:56:23.869454+01	1
+26	t	CLAIMANT	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Confirmation de reception</h2><p>Madame, Monsieur,</p><p>Nous vous confirmons la soumission de votre reclamation.</p><ul><li>Numero de reclamation : <strong>{{reclamationNumber}}</strong></li><li>Date de soumission : <strong>{{submissionDate}}</strong></li></ul><p>Nous vous invitons a consulter la plateforme : <a href='{{portalLink}}'>Suivre ma reclamation</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.889495+01	CLAIM_SUBMITTED	FR	Objet : Confirmation de reception de votre reclamation	2025-12-23 15:56:23.889495+01	1
+27	t	CLAIMANT	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Demande de complement</h2><p>Madame, Monsieur,</p><p>Vous avez recu une reponse concernant votre reclamation n°{{reclamationNumber}}.</p><p>En l'absence de retour de votre part dans un delai de 5 jours, la reclamation sera cloturee automatiquement.</p><p>Nous vous remercions pour votre cooperation.</p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.903758+01	COMPLEMENT_REQUEST	FR	Objet : Reponse a une reclamation - Demande de complement	2025-12-23 15:56:23.903758+01	1
+28	t	CLAIMANT	<!DOCTYPE html><html><head><meta charset='UTF-8'/><style>body{font-family:Arial,sans-serif;background-color:#f4f4f4;padding:16px;} .container{background-color:#fff;padding:20px;border-radius:8px;border:1px solid #ddd;} h2{color:#2c3e50;} p{font-size:15px;line-height:1.6;color:#333;} ul{margin:12px 0 12px 20px;padding:0;}</style></head><body><div class='container'><h2>Cloture de reclamation</h2><p>Madame, Monsieur,</p><p>Nous vous informons que votre reclamation n°{{reclamationNumber}} a ete cloturee.</p><p>Merci de repondre a l'enquete de satisfaction : <a href='{{portalLink}}'>Donner votre avis</a></p><p>Cordialement,</p></div></body></html>	EMAIL	2025-12-23 15:56:23.916825+01	CLAIM_RESPONSE	FR	Objet : Reponse reclamation	2025-12-23 15:56:23.916825+01	1
+\.
+
+
+--
+-- TOC entry 5392 (class 0 OID 49664)
+-- Dependencies: 307
+-- Data for Name: reminder_rule; Type: TABLE DATA; Schema: notification; Owner: postgres
+--
+
+COPY notification.reminder_rule (id, active, audience, cancel_on_statuses, event, offset_type, offset_unit, offset_value, reference_status, repeat_index) FROM stdin;
+1	t	INTERLOCUTOR_EAR	["CLOSED","RESPONDED"]	EXTERNAL_REMINDER_T1	BEFORE	DAYS	2	AFFECTEE_ORG_EXTERNE	1
+2	t	INTERLOCUTOR_EAR	["CLOSED","RESPONDED"]	EXTERNAL_REMINDER_T2	AFTER	DAYS	3	AFFECTEE_ORG_EXTERNE	2
+3	t	INTERLOCUTOR_EAR	["CLOSED","RESPONDED"]	EXTERNAL_REMINDER_T3	AFTER	DAYS	30	AFFECTEE_ORG_EXTERNE	3
+4	t	TREATMENT_OWNER	["CLOSED","RESPONDED"]	INTERNAL_REMINDER_AFTER_CONSULTATION	AFTER	DAYS	2	CONSULTEE	1
+\.
+
+
+--
+-- TOC entry 5394 (class 0 OID 49676)
+-- Dependencies: 309
+-- Data for Name: scheduled_reminder; Type: TABLE DATA; Schema: notification; Owner: postgres
+--
+
+COPY notification.scheduled_reminder (id, attempts, audience, event, execute_at, last_error, payload_json, reclamation_id, reclamation_reference, status) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5309 (class 0 OID 49058)
+-- Dependencies: 224
+-- Data for Name: acaps_profil; Type: TABLE DATA; Schema: profilsacaps; Owner: postgres
+--
+
+COPY profilsacaps.acaps_profil (matricule, email, nom, password, prenom, service, telephone, username) FROM stdin;
+M001	amira.bourehiyi@acaps.ma	Bourehiyi	1234	Amira	DPS	0601123456	amira
+M007	meryem.fassi@acaps.ma	Fassi	1234	Meryem	DPS	0607123456	meryemFassi
+M024	hatim.othmani@acaps.ma	Othmani	1234	Hatim	DPS	0607123456	hatimO
+M025	rachid.kabaj@acaps.ma	Kabaj	1234	rachid	DPS	0607123456	rachidK
+M011	fatima.chakiri@acaps.ma	Chakiri	1234	Fatima	DPS	0611123456	fatimaC
+M029	ahmed.khalil@acaps.ma	Khalil	1234	Ahmed	DPS	0615123456	ahmedK
+M030	anas.Makaveli@acaps.ma	Makaveli	1234	Anas	DPS	0645773209	anasM
+M032	soufiane.elyahyaoui@acaps.ma	El Yahyaoui	1234	Soufiane	DPS	0645773209	soufianeE
+M003	l.naciri@acaps.ma	Zaoui	1234	Roumaissae	DPA	0603123456	roumaissae
+M013	salma.skalli@acaps.ma	Skalli	1234	Salma	DPA	0613123456	salmaS
+M026	sanae.elaidi@acaps.ma	El Aidi	1234	Sanae	DPA	0609123456	sanaeE
+M027	soukaina.boutouil@acaps.ma	Boutouil	1234	Soukaina	DPA	0609123456	soukainaB
+M009	nadia.moutawakil@acaps.ma	Moutawakil	1234	Nadia	DPA	0609123456	nadiaM
+M028	benkadir.aymane@acaps.ma	Benkadir	1234	Aymane	DPA	0615123456	AymaneBen
+M031	avo.mouad@acaps.ma	Avo	1234	Mouad	DPA	0788012563	mouadA
+M033	ali.fared@acaps.ma	Ali	1234	Fared	DPA	0600912837	aliF
+M100	youssef.elamrani@acaps.ma	El Amrani	1234	Youssef	DPA	0612345678	youssef
+M101	fatima.oulad@acaps.ma	Oulad	1234	Fatima	DPS	0623456789	fatima
+M102	mohamed.boukhari@acaps.ma	Boukhari	1234	Mohamed	DPA	0634567890	mohamed
+M103	amina.zahraoui@acaps.ma	Zahraoui	1234	Amina	DPS	0645678901	amina
+M104	ahmed.benjelloun@acaps.ma	Benjelloun	1234	Ahmed	DPA	0656789012	ahmedB
+M105	khadija.elfassi@acaps.ma	El Fassi	1234	Khadija	DPS	0667890123	khadija
+M106	omar.elalami@acaps.ma	El Alami	1234	Omar	DPA	0678901234	omar
+M107	leila.benkirane@acaps.ma	Benkirane	1234	Leila	DPS	0689012345	leila
+M108	mehdi.elyousfi@acaps.ma	El Yousfi	1234	Mehdi	DPA	0690123456	mehdi
+M109	nadia.bennis@acaps.ma	Bennis	1234	Nadia	DPS	0601234567	nadia
+M110	anas.bourkadi@acaps.ma	Bourkadi	1234	Anas	DPA	0612345678	anas
+M111	samira.elkabbaj@acaps.ma	El Kabbaj	1234	Samira	DPS	0623456789	samira
+M112	hicham.elhachimi@acaps.ma	El Hachimi	1234	Hicham	DPA	0634567890	hicham
+M113	yasmine.elouazzani@acaps.ma	El Ouazzani	1234	Yasmine	DPS	0645678901	yasmine
+M114	karim.elfadili@acaps.ma	El Fadili	1234	Karim	DPA	0656789012	karim
+\.
+
+
+--
+-- TOC entry 5310 (class 0 OID 49065)
+-- Dependencies: 225
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: profilsacaps; Owner: postgres
+--
+
+COPY profilsacaps.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+1	1	<< Flyway Baseline >>	BASELINE	<< Flyway Baseline >>	\N	postgres	2025-12-23 15:55:19.375242	0	t
+2	2	seed profile data	SQL	V2__seed_profile_data.sql	-128745453	postgres	2025-12-23 15:55:19.430825	8	t
+\.
+
+
+--
+-- TOC entry 5335 (class 0 OID 49255)
+-- Dependencies: 250
+-- Data for Name: answer; Type: TABLE DATA; Schema: questionnaire; Owner: postgres
+--
+
+COPY questionnaire.answer (id, comment, reclamation_id, source, question_choice_id) FROM stdin;
+1	\N	3	SOUMISSION_FORM	2
+2	\N	3	SOUMISSION_FORM	4
+3	\N	3	SOUMISSION_FORM	6
+4	\N	3	SOUMISSION_FORM	7
+5	\N	4	SOUMISSION_FORM	2
+6	\N	4	SOUMISSION_FORM	4
+7	\N	4	SOUMISSION_FORM	6
+8	\N	4	SOUMISSION_FORM	8
+9	\N	3	PUBLIC_PORTAL	2
+10	\N	3	PUBLIC_PORTAL	1
+11	\N	3	PUBLIC_PORTAL	2
+12	\N	3	PUBLIC_PORTAL	1
+13	\N	3	PUBLIC_PORTAL	2
+14	\N	5	SOUMISSION_FORM	2
+15	\N	5	SOUMISSION_FORM	4
+16	\N	5	SOUMISSION_FORM	5
+17	\N	5	SOUMISSION_FORM	8
+18	\N	6	SOUMISSION_FORM	2
+19	\N	6	SOUMISSION_FORM	4
+20	\N	6	SOUMISSION_FORM	6
+21	\N	6	SOUMISSION_FORM	7
+22	\N	6	PUBLIC_PORTAL	1
+23	\N	6	PUBLIC_PORTAL	2
+24	\N	6	PUBLIC_PORTAL	1
+25	\N	6	PUBLIC_PORTAL	2
+26	\N	6	PUBLIC_PORTAL	1
+27	\N	6	PUBLIC_PORTAL	3
+28	\N	7	SOUMISSION_FORM	1
+29	\N	7	SOUMISSION_FORM	4
+30	\N	7	SOUMISSION_FORM	6
+31	\N	7	SOUMISSION_FORM	7
+32	\N	7	PUBLIC_PORTAL	10
+33	\N	7	PUBLIC_PORTAL	11
+34	\N	7	PUBLIC_PORTAL	14
+35	\N	7	PUBLIC_PORTAL	15
+36	\N	7	PUBLIC_PORTAL	18
+38	\N	8	SOUMISSION_FORM	2
+39	\N	8	SOUMISSION_FORM	4
+40	\N	8	SOUMISSION_FORM	6
+41	\N	8	SOUMISSION_FORM	7
+42	\N	8	PUBLIC_PORTAL	10
+43	\N	8	PUBLIC_PORTAL	11
+44	\N	8	PUBLIC_PORTAL	14
+45	\N	8	PUBLIC_PORTAL	15
+46	\N	8	PUBLIC_PORTAL	17
+47	\N	8	PUBLIC_PORTAL	22
+48	\N	9	SOUMISSION_FORM	2
+49	\N	9	SOUMISSION_FORM	4
+50	\N	9	SOUMISSION_FORM	5
+51	\N	9	SOUMISSION_FORM	7
+52	\N	10	SOUMISSION_FORM	2
+53	\N	10	SOUMISSION_FORM	4
+54	\N	10	SOUMISSION_FORM	6
+55	\N	10	SOUMISSION_FORM	7
+56	\N	10	PUBLIC_PORTAL	10
+57	\N	10	PUBLIC_PORTAL	11
+58	\N	10	PUBLIC_PORTAL	14
+59	\N	10	PUBLIC_PORTAL	15
+60	im testing the comment of feedback form	10	PUBLIC_PORTAL	17
+61	\N	10	PUBLIC_PORTAL	22
+62	\N	11	SOUMISSION_FORM	2
+63	\N	11	SOUMISSION_FORM	4
+64	\N	11	SOUMISSION_FORM	5
+65	\N	11	SOUMISSION_FORM	7
+66	\N	11	PUBLIC_PORTAL	9
+67	\N	11	PUBLIC_PORTAL	12
+68	\N	11	PUBLIC_PORTAL	13
+69	\N	11	PUBLIC_PORTAL	15
+70	Message de teste	11	PUBLIC_PORTAL	17
+71	\N	11	PUBLIC_PORTAL	22
+72	\N	11	PUBLIC_PORTAL	25
+\.
+
+
+--
+-- TOC entry 5337 (class 0 OID 49264)
+-- Dependencies: 252
+-- Data for Name: choice; Type: TABLE DATA; Schema: questionnaire; Owner: postgres
+--
+
+COPY questionnaire.choice (id, label) FROM stdin;
+1	Oui
+2	Non
+3	autre
+4	potail
+5	email
+\.
+
+
+--
+-- TOC entry 5342 (class 0 OID 49300)
+-- Dependencies: 257
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: questionnaire; Owner: postgres
+--
+
+COPY questionnaire.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+1	1	<< Flyway Baseline >>	BASELINE	<< Flyway Baseline >>	\N	postgres	2025-12-23 15:55:33.381603	0	t
+2	2	seed question data	SQL	V2__seed_question_data.sql	-1722534636	postgres	2025-12-23 15:55:33.453702	8	t
+3	3	seed submission questions	SQL	V3__seed_submission_questions.sql	1096208513	postgres	2025-12-23 15:55:33.500051	11	t
+4	4	seed after closed questions	SQL	V4__seed_after_closed_questions.sql	-928724320	postgres	2025-12-23 15:55:33.526366	18	t
+\.
+
+
+--
+-- TOC entry 5339 (class 0 OID 49270)
+-- Dependencies: 254
+-- Data for Name: question; Type: TABLE DATA; Schema: questionnaire; Owner: postgres
+--
+
+COPY questionnaire.question (id, active, answer_mode, display_order, editable, is_comment, kind, label) FROM stdin;
+1	t	DURING_SUBMISSION	1	f	f	SUBMISSION	Avez-vous déjà adressé une réclamation à l’entreprise d’assurance et/ou un autre organisme ?
+2	t	DURING_SUBMISSION	1	f	f	SUBMISSION	Avez-vous reçu une réponse suite à cette réclamation ?
+3	t	DURING_SUBMISSION	3	f	f	SUBMISSION	Avez-vous déjà sollicité l’intervention du médiateur de l’assurance ?
+4	t	DURING_SUBMISSION	4	f	f	SUBMISSION	Souhaitez-vous recevoir un questionnaire de satisfaction après traitement ?
+5	t	PUBLIC_PORTAL	1	t	f	AFTER_CLOSED	Êtes-vous globalement satisfait du traitement de votre réclamation ?
+6	t	PUBLIC_PORTAL	2	t	f	AFTER_CLOSED	Avez-vous rencontré des difficultés pour accéder à la plateforme ?
+7	t	PUBLIC_PORTAL	3	t	f	AFTER_CLOSED	Le délai de traitement vous a-t-il semblé raisonnable ?
+8	t	PUBLIC_PORTAL	4	t	f	AFTER_CLOSED	Êtes-vous satisfait de la réactivité des équipes ?
+10	t	PUBLIC_PORTAL	6	t	f	AFTER_CLOSED	est ce que la question est depuis l'email ou bien le portail ?
+9	t	PUBLIC_PORTAL	5	t	t	AFTER_CLOSED	Les arguments présentés dans la réponse étaient-ils pertinents ?
+11	t	PUBLIC_PORTAL	7	t	f	AFTER_CLOSED	êtes vous satisfée du service
+\.
+
+
+--
+-- TOC entry 5341 (class 0 OID 49280)
+-- Dependencies: 256
+-- Data for Name: question_choice; Type: TABLE DATA; Schema: questionnaire; Owner: postgres
+--
+
+COPY questionnaire.question_choice (id, display_order, choice_id, question_id) FROM stdin;
+1	1	1	1
+2	2	2	1
+3	1	1	2
+4	2	2	2
+5	1	1	3
+6	2	2	3
+7	1	1	4
+8	2	2	4
+9	1	1	5
+10	2	2	5
+11	1	1	6
+12	2	2	6
+13	1	1	7
+14	2	2	7
+15	1	1	8
+16	2	2	8
+17	1	1	9
+18	2	2	9
+22	1	4	10
+23	2	5	10
+24	1	1	11
+25	2	2	11
+\.
+
+
+--
+-- TOC entry 5333 (class 0 OID 49244)
+-- Dependencies: 248
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+1	1	<< Flyway Baseline >>	BASELINE	<< Flyway Baseline >>	\N	postgres	2025-12-23 15:55:23.250842	0	t
+2	2	seed reference data	SQL	V2__seed_reference_data.sql	1951815575	postgres	2025-12-23 15:55:23.29039	26	t
+\.
+
+
+--
+-- TOC entry 5324 (class 0 OID 49188)
+-- Dependencies: 239
+-- Data for Name: partie_lesee; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.partie_lesee (id, create_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Réclamant lui-même
+2	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Autre
+\.
+
+
+--
+-- TOC entry 5326 (class 0 OID 49195)
+-- Dependencies: 241
+-- Data for Name: qualite_reclamant; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.qualite_reclamant (id, create_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Assuré
+2	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Affilié
+3	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Adhérent
+4	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Ayant-droit
+5	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Avocat
+6	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Autre
+\.
+
+
+--
+-- TOC entry 5328 (class 0 OID 49202)
+-- Dependencies: 243
+-- Data for Name: reclamant; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.reclamant (id, adresse_email, adresse_postale, autre_qualite_reclamant, nom, nom_prenom_lesee, numero_piece_identite, numero_telephone, prenom, raison_sociale, partie_lesee_id, qualite_reclamant_id, tranche_age_id, type_piece_identite_id, numero_piece_identite_lesee, type_piece_identite_lesee_id) FROM stdin;
+2	khalillmkhantar@gmail.com	rabat		Zaoui		AA12345		Roumaissae		1	1	2	1	\N	\N
+3	khalillmkhantar@gmail.com			Zaoui		AA12345		Roumaissae		1	1	2	1	\N	\N
+4	khalillmkhantar@gmail.com	rabat		Zaoui		AA12345		Roumaissae		1	1	1	1	\N	\N
+5	khalillmkhantar@gmail.com			Zaoui		AA12345		Roumaissae		1	1	1	1	\N	\N
+6	khalillmkhantar@gmail.com			Zaoui		AA12345		Roumaissae		1	1	\N	1	\N	\N
+7	khalillmkhantar@gmail.com			Zaoui		AA12345		Roumaissae		1	1	\N	1	\N	\N
+8	khalillmkhantar@gmail.com		\N	Zaoui	\N	AA12345		Roumaissae		1	1	\N	1	\N	\N
+9	khalillmkhantar@gmail.com			Zaoui		AA12345		Roumaissae		1	1	\N	1	\N	\N
+10	khalillmkhantar@gmail.com	salé		boualouchi		AA12345		salman		1	1	2	1	\N	\N
+\.
+
+
+--
+-- TOC entry 5330 (class 0 OID 49211)
+-- Dependencies: 245
+-- Data for Name: tranche_age; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.tranche_age (id, create_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Moins de 18 ans
+2	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	18 - 35 ans
+3	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	36 - 60 ans
+4	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Plus de 60 ans
+\.
+
+
+--
+-- TOC entry 5332 (class 0 OID 49218)
+-- Dependencies: 247
+-- Data for Name: type_piece_identite; Type: TABLE DATA; Schema: reclamant; Owner: postgres
+--
+
+COPY reclamant.type_piece_identite (id, create_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	CIN
+2	2025-12-23 15:55:23.313001	2025-12-23 15:55:23.313001	t	Passeport
+3	2025-12-25 10:07:53.25024	2025-12-25 10:07:53.25024	t	carte séjoure
+\.
+
+
+--
+-- TOC entry 5350 (class 0 OID 49351)
+-- Dependencies: 265
+-- Data for Name: affectation; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.affectation (id, created_at, updated_at, assigned_by_id, assigned_to_profile_id, message, type, entreprise_id, organisme_id, reclamation_id) FROM stdin;
+1	2025-12-25 05:31:05.135487	2025-12-25 05:31:05.135487	3	4	RTYUI	INTERNE_ACAPS	\N	\N	9
+\.
+
+
+--
+-- TOC entry 5352 (class 0 OID 49361)
+-- Dependencies: 267
+-- Data for Name: categorie; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.categorie (id, created_at, updated_at, actif, libelle, parent_id) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	RC auto (corporel)	\N
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	RC auto (matériel)	\N
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Accidents de travail et maladie professionnelles	\N
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Maladie	\N
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Vie et capitalisation	\N
+6	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Assistance	\N
+7	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Risques divers	\N
+8	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Autre	\N
+9	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	6
+10	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	3
+11	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	7
+12	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	6
+13	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	4
+14	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	1
+15	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	7
+16	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	1
+17	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	6
+18	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	4
+19	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	3
+20	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	7
+21	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	1
+22	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	4
+23	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	3
+24	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	2
+25	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	2
+26	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	5
+27	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Production (résiliation d'un contrat, restitution de la prime)	5
+28	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Souscription (refus de souscription, majoration….)	2
+29	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Exécution d'un contrat d'assurance (remboursement de frais, rachat…)	5
+\.
+
+
+--
+-- TOC entry 5354 (class 0 OID 49368)
+-- Dependencies: 269
+-- Data for Name: classification; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.classification (id, created_at, updated_at, commentaire, departement, email, message, motif, notification, classification_motif_id, reclamation_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5356 (class 0 OID 49377)
+-- Dependencies: 271
+-- Data for Name: classification_motif; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.classification_motif (id, created_at, updated_at, actif, libelle) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5358 (class 0 OID 49384)
+-- Dependencies: 273
+-- Data for Name: dynamic_field; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.dynamic_field (id, created_at, updated_at, actif, libelle, data_type, max, min) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	N° d'immatriculation	text	20	5
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	N° du dossier du remboursement	text	20	5
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	N° de la pension	text	20	5
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	N° affiliation	text	20	5
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	N° de prise en charge	text	20	5
+\.
+
+
+--
+-- TOC entry 5360 (class 0 OID 49393)
+-- Dependencies: 275
+-- Data for Name: entreprise; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.entreprise (id, created_at, updated_at, actif, libelle, parent_id) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Autre	\N
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Fonds de garantie des accidents de la circulation	\N
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Entreprise d'assurances et de réassurance	\N
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Bureau central marocain d'assurance	\N
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Intérmédiaire d'assurance	\N
+6	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle Attamine Chaabi	3
+7	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	MCMA	3
+8	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	RMA Assistance	3
+9	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Axa Assurance Maroc	3
+10	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Africa First assist	3
+11	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CAT	3
+12	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	MAMDA	3
+13	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Chaabi Assistance	3
+14	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Marocaine Vie	3
+15	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	WAFA IMA	3
+16	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Allianz Maroc	3
+17	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Wafa Assurance	3
+18	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Sanlam Maroc	3
+19	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AtlantaSanad	3
+20	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Maroce assistance internationale	3
+21	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Royale marocaine d'assurance	3
+22	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Cover Edge	3
+23	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	MATU	3
+24	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Courtier	5
+25	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Agent	5
+\.
+
+
+--
+-- TOC entry 5396 (class 0 OID 49697)
+-- Dependencies: 311
+-- Data for Name: flyway_schema_history; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.flyway_schema_history (installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) FROM stdin;
+1	1	<< Flyway Baseline >>	BASELINE	<< Flyway Baseline >>	\N	postgres	2025-12-23 15:56:26.646053	0	t
+2	2	seed reference data	SQL	V2__seed_reference_data.sql	989633648	postgres	2025-12-23 15:56:26.722075	63	t
+3	3	seed link organisme nature with dynamic field data	SQL	V3__seed_link_organisme_nature_with_dynamic_field_data.sql	597756125	postgres	2025-12-23 15:56:26.920527	47	t
+4	4	seed status data	SQL	V4__seed_status_data.sql	771684167	postgres	2025-12-23 15:56:27.005516	35	t
+5	5	status contexte	SQL	V5__status_contexte.sql	1497089634	postgres	2025-12-23 15:56:27.067032	17	t
+6	6	add missing workflow transitions	SQL	V6__add_missing_workflow_transitions.sql	-1286735912	postgres	2025-12-23 15:56:27.100532	8	t
+\.
+
+
+--
+-- TOC entry 5362 (class 0 OID 49400)
+-- Dependencies: 277
+-- Data for Name: format; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.format (id, created_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Téléphone
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Portail
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Réseaux sociaux
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Courrier physique
+\.
+
+
+--
+-- TOC entry 5364 (class 0 OID 49407)
+-- Dependencies: 279
+-- Data for Name: meta_data; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.meta_data (id, created_at, updated_at, value, organisme_nature_dynamic_field_id, reclamation_dps_id) FROM stdin;
+1	2025-12-24 15:35:22.934191	2025-12-24 15:35:22.934191	IMMT-1234	242	3
+2	2025-12-24 15:35:22.986909	2025-12-24 15:35:22.986909	AFFT-1234	244	3
+3	2025-12-24 20:10:17.365811	2025-12-24 20:10:17.365811	sqdf	12	5
+4	2025-12-24 20:41:29.564105	2025-12-24 20:41:29.564105	sdf	256	6
+5	2025-12-24 20:41:29.596577	2025-12-24 20:41:29.596577	sdf	263	6
+6	2025-12-25 03:27:23.869513	2025-12-25 03:27:23.869513	SDF	475	8
+7	2025-12-25 06:28:09.672364	2025-12-25 06:28:09.672364	sdf	290	10
+8	2025-12-25 06:28:09.696196	2025-12-25 06:28:09.696196	sdf	287	10
+\.
+
+
+--
+-- TOC entry 5366 (class 0 OID 49414)
+-- Dependencies: 281
+-- Data for Name: modification_historique; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.modification_historique (id, created_at, updated_at, adresse_postale, autre_entreprise, autre_nature, autre_qualite, categorie, detail_organisme, email, entreprise, format, motif, nature, nom, nom_prenom_lessee, numero_affiliation, numero_dossier_remboursement, numero_immatriculation, numero_pension, numero_piece_identite, numero_prise_en_charge, numero_telephone, organisme, partie_lessee, prenom, profile_id, qualite, raison_social, reference_reclamation, regime, secteur, sous_categorie, tranche_age, type_entreprise, type_organisme, type_piece_identite, reclamation_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5368 (class 0 OID 49423)
+-- Dependencies: 283
+-- Data for Name: motif; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.motif (id, created_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Non respect des clauses contractuelles
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Autre
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Retard de traitement
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Désaccord sur le montant de l’indemnisation
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Refus d’indemnisation
+\.
+
+
+--
+-- TOC entry 5370 (class 0 OID 49430)
+-- Dependencies: 285
+-- Data for Name: nature; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.nature (id, created_at, updated_at, actif, libelle) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Déclarations salariales
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Affiliation
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mise à jour des informations personnels
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Livret individuel
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Autre
+6	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Retard de paiement
+7	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Faible remboursement
+8	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Honoraires d'avocat
+9	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	oeuvres sociales
+10	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Droits fermés
+11	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Demande d'informations
+12	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Pension de vieillesse
+13	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Remboursement complémentaire de la mutuelle
+14	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Adhésion groupe
+15	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Capital
+16	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Double immatriculation
+17	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Tiers payant
+18	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Pension complémentaire
+19	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Retraite anticipée
+20	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Majoration de la rente
+21	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Prescription
+22	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Problèmes de remboursement des dispositifs médicaux
+23	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Retard de prise en charge
+24	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Ouverture des droits à l'AMO
+25	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Refus de prise en charge
+26	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Rachat
+27	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Allocations familiales
+29	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Pension de survivants
+30	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Capital de dècés
+31	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Soins à l'étranger
+32	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Adhésion individuelle
+33	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Indemnité perte d'emploi
+34	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Non remboursement (détails à préciser)
+35	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Rente non payée
+36	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Cotisations supérieures à celles dues
+37	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Remboursement des cotisations salariales
+38	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Retard de remboursement
+39	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Problèmes administratifs
+40	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Indeminité perte d'emploi
+41	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Adhésion
+42	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	vira
+43	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Nombre de points gratuits en cas de maladie
+44	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Pension d'invalidité
+45	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Validations de carrières
+46	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Coordination entre les régimes de retraite
+47	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Capital de fin de carrière
+28	2025-12-23 15:56:26.849302	2025-12-25 04:19:37.595373	t	Adhésion / immatriculation
+48	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	f	N/A
+\.
+
+
+--
+-- TOC entry 5372 (class 0 OID 49437)
+-- Dependencies: 287
+-- Data for Name: organisme; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.organisme (id, created_at, updated_at, actif, libelle, secteur, type, parent_id) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CNSS	AMO	\N	\N
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CNOPS	AMO	\N	\N
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CMR	Retraite	\N	\N
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	RCAR	Retraite	\N	\N
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CNSS	Retraite	\N	\N
+6	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CIMR	Retraite	\N	\N
+7	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	CNRA	Retraite	\N	\N
+8	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale du personnel des administrations publiques au Maroc (MGPAP)	Mutualité	\N	\N
+9	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale de l'éducation nationale (MGEN)	Mutualité	\N	\N
+10	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	oeuvres de mutualités des fonctionnaires et agents assimilés du Maroc (OMFAM)	Mutualité	\N	\N
+11	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle des unités Sanitaires des Fonctionnaires et Agents Assimilés du Maroc (MUSFAAM)	Mutualité	\N	\N
+12	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle des douanes et impôts indirectes (MDII)	Mutualité	\N	\N
+13	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale des postes et télécommunications (MGPTT)	Mutualité	\N	\N
+14	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle d'action sociale du personnel de la caisse nationale de sécurité sociale (MAS)	Mutualité	\N	\N
+15	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle d'assistance médicale des tabacs (MAMT)	Mutualité	\N	\N
+16	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle de l'office d'exploitation des ports (MODEP)	Mutualité	\N	\N
+17	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle des Unités Sanitaires et Sociales des Employés et Retraités de la Société d'Exploitation des Ports (MUSSEP)	Mutualité	\N	\N
+18	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Caisse mutuelle complémentaire et d'action sociale des entreprises de production, de transport et de distribution d'électricité au Maroc (CMCAS)	Mutualité	\N	\N
+19	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle de prévoyance sociale des cheminots (MPSC)	Mutualité	\N	\N
+20	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle « Denier de la veuve »	Mutualité	\N	\N
+21	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Caisse mutualiste interprofessionnelle marocaine (CMIM)	Mutualité	\N	\N
+22	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle de prévoyance et d'action sociale de Royal Air Maroc (MUPRAS)	Mutualité	\N	\N
+23	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle de prévoyance des Banques Populaires (MPBP)	Mutualité	\N	\N
+24	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Caisse de secours mutuelle de la Mine (IMINI)	Mutualité	\N	\N
+25	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle du Personnel de la Société Limadet (Limadet-Ferry)	Mutualité	\N	\N
+26	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale des professionnelles du transport au Maroc (MGPTRANS)	Mutualité	\N	\N
+27	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale des Barreaux du Maroc (MGBM)	Mutualité	\N	\N
+28	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle Nationale des Artistes (MNA)	Mutualité	\N	\N
+29	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle générale des pharmaciens et professionnels de la santé (MUGEPHAR-PS)	Mutualité	\N	\N
+30	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Mutuelle des Marocains de l'étranger (MUMADE)	Mutualité	\N	\N
+31	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AMO-TNS	AMO	\N	1
+32	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AMO-ACHAMIL	AMO	\N	1
+33	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AMO-TADAMON	AMO	\N	1
+34	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AMO-PRIVE	AMO	\N	1
+35	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	AMO-PUBLIC	AMO	\N	2
+37	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Régime ATTAKMILI	Retraite	\N	3
+38	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Régime des pensions militaires	Retraite	\N	3
+39	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Régime des pensions civiles	Retraite	\N	3
+40	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Régime de base	Retraite	\N	4
+41	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Régime complémentaire	Retraite	\N	4
+42	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Rentes ou indemnités de droit commun	Retraite	\N	7
+43	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Rentes accident de travail (AT)	Retraite	\N	7
+44	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Rentes accident de circulation (AC)	Retraite	\N	7
+45	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Recore	Retraite	\N	7
+46	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	t	Assurances consenties	Retraite	\N	7
+36	2025-12-23 15:56:26.849302	2025-12-25 10:09:37.240547	t	AMO-ETUDIANTS	AMO	\N	2
+\.
+
+
+--
+-- TOC entry 5374 (class 0 OID 49447)
+-- Dependencies: 289
+-- Data for Name: organisme_nature; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.organisme_nature (id, created_at, updated_at, nature_id, organisme_id) FROM stdin;
+1	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	2
+2	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	32
+3	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	35
+4	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	2
+5	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	35
+6	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	35
+7	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	34
+8	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	34
+9	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	32
+10	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	35
+11	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	33
+12	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	32
+13	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	35
+14	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	31
+15	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	32
+16	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	31
+17	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	33
+18	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	32
+19	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	32
+20	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	35
+21	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	34
+22	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	36
+23	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	1
+24	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	33
+25	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	34
+26	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	2
+27	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	2
+28	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	31
+29	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	34
+30	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	34
+31	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	36
+32	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	34
+33	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	2
+34	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	2
+35	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	2
+36	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	36
+37	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	1
+38	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	36
+39	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	1
+40	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	33
+41	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	33
+42	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	1
+43	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	2
+44	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	31
+45	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	36
+46	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	31
+47	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	1
+48	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	34
+49	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	31
+50	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	1
+51	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	33
+52	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	31
+53	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	36
+54	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	33
+55	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	31
+56	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	33
+57	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	33
+58	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	1
+59	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	36
+60	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	2
+61	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	34
+62	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	1
+63	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	31
+64	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	1
+65	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	1
+66	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	31
+67	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	1
+68	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	33
+69	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	31
+70	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	32
+71	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	33
+72	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	32
+73	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	33
+74	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	2
+75	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	31
+76	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	34
+77	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	36
+78	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	36
+79	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	31
+80	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	34
+81	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	35
+82	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	7	33
+83	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	34
+84	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	35
+85	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	2
+86	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	34
+87	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	36
+88	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	33
+89	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	2
+90	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	1
+91	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	23	2
+92	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	22	34
+93	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	16	2
+94	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	31
+95	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	36
+96	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	36
+97	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	32
+98	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	32
+99	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	35
+100	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	32
+101	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	32
+102	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	32
+103	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	1
+104	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	1
+105	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	24	36
+106	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	38	36
+107	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	34	35
+108	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	10	35
+109	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	25	32
+110	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	31	35
+111	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	17	35
+112	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	35
+113	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	11
+114	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	25
+115	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	17
+116	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	26
+117	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	24
+118	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	9
+119	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	16
+120	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	16
+121	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	27
+122	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	19
+123	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	11
+124	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	23
+125	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	23
+126	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	17
+127	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	24
+128	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	9
+129	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	15
+130	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	14
+131	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	15
+132	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	18
+133	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	8
+134	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	22
+135	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	13
+136	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	10
+137	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	9
+138	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	24
+139	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	13
+140	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	14
+141	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	22
+142	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	12
+143	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	29
+144	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	19
+145	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	28
+146	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	21
+147	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	21
+148	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	18
+149	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	10
+150	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	14
+151	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	12
+152	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	30
+153	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	20
+154	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	29
+155	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	19
+156	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	10
+157	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	12
+158	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	30
+159	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	28
+160	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	18
+161	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	8
+162	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	20
+163	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	22
+164	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	13
+165	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	21
+166	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	16
+167	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	30
+168	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	19
+169	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	19
+170	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	23
+171	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	8
+172	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	28
+173	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	20
+174	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	22
+175	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	29
+176	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	13
+177	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	14
+178	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	15
+179	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	14
+180	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	21
+181	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	26
+182	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	16
+183	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	25
+184	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	15
+185	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	24
+186	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	9
+187	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	9
+188	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	27
+189	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	24
+190	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	13
+191	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	11
+192	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	22
+193	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	23
+194	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	16
+195	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	17
+196	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	21
+197	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	26
+198	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	27
+199	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	15
+200	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	25
+201	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	23
+202	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	18
+203	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	10
+204	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	14
+205	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	12
+206	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	8
+207	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	8
+208	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	29
+209	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	22
+210	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	19
+211	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	13
+212	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	11
+213	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	18
+214	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	10
+215	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	20
+216	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	14
+217	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	12
+218	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	20
+219	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	28
+220	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	21
+221	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	28
+222	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	17
+223	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	30
+224	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	30
+225	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	29
+226	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	19
+227	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	11
+228	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	16
+229	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	17
+230	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	25
+231	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	24
+232	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	10
+233	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	9
+234	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	25
+235	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	12
+236	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	18
+237	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	26
+238	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	26
+239	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	15
+240	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	11
+241	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	29
+242	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	17
+243	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	9
+244	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	27
+245	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	24
+246	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	27
+247	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	23
+248	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	26
+249	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	16
+250	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	25
+251	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	15
+252	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	27
+253	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	23
+254	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	8
+255	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	24
+256	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	9
+257	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	11
+258	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	11
+259	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	16
+260	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	26
+261	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	27
+262	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	20
+263	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	25
+264	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	15
+265	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	17
+266	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	23
+267	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	28
+268	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	17
+269	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	30
+270	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	30
+271	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	28
+272	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	8
+273	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	25
+274	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	12
+275	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	10
+276	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	20
+277	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	10
+278	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	12
+279	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	22
+280	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	13
+281	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	21
+282	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	18
+283	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	26
+284	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	18
+285	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	30
+286	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	30	29
+287	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	14
+288	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	28	29
+289	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	9	8
+290	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	28
+291	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	3	20
+292	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	36	27
+293	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	13
+294	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	13	22
+295	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	19
+296	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	47	21
+297	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	46	39
+298	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	37	39
+299	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	19	39
+300	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	27	39
+301	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	39
+302	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	39
+303	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	12	39
+304	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	2	39
+305	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	44	39
+306	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	1	39
+307	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	45	39
+308	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	29	39
+309	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	1	38
+310	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	45	38
+311	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	44	38
+312	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	29	38
+313	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	19	38
+314	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	37	38
+315	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	46	38
+316	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	12	38
+317	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	2	38
+318	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	38
+319	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	38
+320	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	27	38
+321	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	41	37
+322	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	26	37
+323	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	18	37
+324	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	37
+325	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	29	40
+326	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	45	40
+327	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	1	40
+328	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	44	40
+329	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	27	40
+330	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	2	40
+331	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	12	40
+332	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	40
+333	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	40
+334	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	46	40
+335	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	19	40
+336	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	37	40
+337	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	18	41
+338	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	41
+339	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	26	41
+340	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	41	41
+341	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	29	5
+342	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	42	5
+343	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	45	5
+344	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	1	5
+345	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	44	5
+346	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	2	5
+347	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	5
+348	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	5
+349	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	27	5
+350	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	37	5
+351	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	19	5
+352	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	40	5
+353	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	46	5
+354	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	32	6
+355	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	19	6
+356	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	21	6
+357	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	5	6
+358	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	12	6
+359	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	11	6
+360	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	6
+361	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	14	6
+362	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	43	6
+363	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	1	6
+364	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	4	6
+365	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	44	6
+366	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	29	6
+367	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	35	43
+368	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	8	43
+369	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	6	43
+370	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	15	43
+371	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	5	43
+372	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	20	43
+373	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	26	43
+374	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	43
+375	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	8	44
+376	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	6	44
+377	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	35	44
+378	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	26	44
+379	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	20	44
+380	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	44
+381	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	5	44
+382	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	15	44
+383	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	15	42
+384	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	5	42
+385	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	39	42
+386	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	20	42
+387	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	26	42
+388	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	35	42
+389	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	6	42
+390	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	8	42
+391	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	48	46
+392	2025-12-23 15:56:26.849302	2025-12-23 15:56:26.849302	48	45
+\.
+
+
+--
+-- TOC entry 5376 (class 0 OID 49454)
+-- Dependencies: 291
+-- Data for Name: organisme_nature_dynamic_field; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.organisme_nature_dynamic_field (id, created_at, updated_at, is_required, dynamic_field_id, organisme_nature_id) FROM stdin;
+1	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	308
+2	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	303
+3	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	305
+4	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	301
+5	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	297
+6	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	311
+7	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	316
+8	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	312
+9	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	319
+10	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	315
+11	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	331
+12	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	328
+13	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	325
+14	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	333
+15	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	334
+16	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	345
+17	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	342
+18	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	341
+19	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	353
+20	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	348
+21	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	358
+22	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	366
+23	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	3	365
+24	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	360
+25	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	374
+26	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	380
+27	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	3	385
+28	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	107
+29	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	3
+30	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	14
+31	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	96
+32	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	19
+33	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	27
+34	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	52
+35	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	37
+36	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	19
+37	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	37
+38	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	52
+39	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	14
+40	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	3
+41	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	107
+42	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	96
+43	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	25
+44	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	82
+45	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	100
+46	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	63
+47	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	62
+48	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	9
+49	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	30
+50	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	95
+51	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	85
+52	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	110
+53	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	85
+54	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	100
+55	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	106
+56	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	9
+57	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	63
+58	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	8
+59	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	41
+60	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	54
+61	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	102
+62	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	77
+63	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	72
+64	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	29
+65	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	56
+66	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	92
+67	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	104
+68	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	64
+69	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	44
+70	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	92
+71	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	56
+72	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	44
+73	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	98
+74	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	54
+75	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	81
+76	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	34
+77	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	79
+78	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	77
+79	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	76
+80	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	45
+81	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	111
+82	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	22
+83	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	49
+84	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	13
+85	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	57
+86	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	60
+87	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	1
+88	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	33
+89	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	50
+90	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	17
+91	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	67
+92	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	1
+93	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	111
+94	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	45
+95	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	60
+96	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	22
+97	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	49
+98	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	13
+99	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	17
+100	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	67
+101	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	33
+102	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	50
+103	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	57
+104	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	60
+105	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	76
+106	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	45
+107	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	57
+108	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	22
+109	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	49
+110	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	13
+111	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	111
+112	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	76
+113	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	17
+114	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	33
+115	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	50
+116	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	67
+117	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	1
+118	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	64
+119	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	98
+120	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	44
+121	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	56
+122	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	92
+123	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	104
+124	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	79
+125	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	102
+126	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	77
+127	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	72
+128	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	34
+129	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	29
+130	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	81
+131	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	41
+132	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	29
+133	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	81
+134	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	34
+135	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	72
+136	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	79
+137	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	102
+138	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	54
+139	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	41
+140	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	98
+141	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	64
+142	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	104
+143	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	30
+144	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	95
+145	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	110
+146	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	62
+147	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	8
+148	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	106
+149	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	106
+150	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	9
+151	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	63
+152	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	62
+153	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	8
+154	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	100
+155	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	110
+156	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	95
+157	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	85
+158	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	30
+159	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	27
+160	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	52
+161	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	37
+162	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	19
+163	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	82
+164	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	25
+165	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	107
+166	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	14
+167	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	96
+168	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	25
+169	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	82
+170	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	2	3
+171	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	27
+172	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	109
+173	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	43
+174	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	66
+175	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	43
+176	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	38
+177	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	24
+178	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	71
+179	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	59
+180	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	90
+181	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	18
+182	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	38
+183	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	24
+184	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	47
+185	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	28
+186	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	99
+187	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	48
+188	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	47
+189	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	91
+190	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	86
+191	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	5
+192	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	5
+193	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	86
+194	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	91
+195	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	66
+196	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	109
+197	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	109
+198	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	66
+199	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	43
+200	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	71
+201	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	38
+202	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	59
+203	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	18
+204	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	90
+205	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	24
+206	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	71
+207	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	18
+208	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	90
+209	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	59
+210	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	48
+211	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	99
+212	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	28
+213	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	47
+214	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	28
+215	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	48
+216	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	99
+217	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	5
+218	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	91
+219	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	5	86
+220	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	61
+221	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	61
+222	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	88
+223	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	88
+224	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	15
+225	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	36
+226	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	83
+227	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	73
+228	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	53
+229	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	23
+230	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	53
+231	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	23
+232	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	36
+233	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	83
+234	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	15
+235	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	73
+236	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	89
+237	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	69
+238	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	69
+239	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	89
+240	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	74
+241	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	6
+242	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	2
+243	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	42
+244	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	2
+245	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	6
+246	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	42
+247	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	74
+248	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	94
+249	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	1	20
+250	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	20
+251	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	94
+252	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	108
+253	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	65
+254	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	108
+255	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	65
+256	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	68
+257	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	32
+258	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	78
+259	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	7
+260	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	32
+261	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	7
+262	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	78
+263	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	68
+264	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	46
+265	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	103
+266	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	4
+267	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	40
+268	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	16
+269	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	40
+270	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	16
+271	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	103
+272	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	46
+273	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	4
+274	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	70
+275	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	105
+276	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	75
+277	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	105
+278	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	75
+279	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	70
+280	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	39
+281	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	31
+282	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	11
+283	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	11
+284	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	39
+285	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	31
+286	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	84
+287	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	12
+288	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	10
+289	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	10
+290	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	12
+291	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	84
+292	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	101
+293	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	80
+294	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	80
+295	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	101
+296	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	93
+297	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	26
+298	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	4	93
+299	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	f	1	26
+300	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	291
+301	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	254
+302	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	169
+303	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	201
+304	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	176
+305	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	220
+306	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	259
+307	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	166
+308	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	154
+309	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	157
+310	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	215
+311	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	210
+312	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	161
+313	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	258
+314	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	121
+315	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	147
+316	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	221
+317	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	150
+318	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	279
+319	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	133
+320	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	289
+321	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	172
+322	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	113
+323	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	260
+324	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	184
+325	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	183
+326	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	232
+327	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	158
+328	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	188
+329	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	173
+330	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	278
+331	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	164
+332	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	256
+333	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	212
+334	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	266
+335	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	144
+336	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	216
+337	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	202
+338	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	263
+339	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	244
+340	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	118
+341	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	170
+342	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	231
+343	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	217
+344	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	223
+345	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	240
+346	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	128
+347	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	272
+348	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	130
+349	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	283
+350	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	274
+351	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	115
+352	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	208
+353	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	236
+354	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	148
+355	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	247
+356	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	280
+357	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	227
+358	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	171
+359	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	190
+360	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	138
+361	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	242
+362	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	261
+363	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	123
+364	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	275
+365	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	277
+366	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	222
+367	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	182
+368	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	174
+369	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	211
+370	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	294
+371	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	153
+372	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	200
+373	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	257
+374	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	140
+375	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	125
+376	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	237
+377	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	233
+378	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	206
+379	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	226
+380	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	189
+381	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	290
+382	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	287
+383	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	165
+384	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	229
+385	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	281
+386	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	181
+387	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	245
+388	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	152
+389	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	124
+390	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	199
+391	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	225
+392	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	293
+393	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	132
+394	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	131
+395	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	178
+396	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	156
+397	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	191
+398	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	252
+399	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	228
+400	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	194
+401	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	135
+402	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	126
+403	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	295
+404	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	269
+405	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	249
+406	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	203
+407	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	288
+408	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	239
+409	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	255
+410	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	241
+411	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	284
+412	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	224
+413	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	142
+414	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	160
+415	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	243
+416	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	271
+417	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	193
+418	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	116
+419	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	250
+420	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	167
+421	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	296
+422	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	273
+423	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	282
+424	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	219
+425	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	146
+426	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	139
+427	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	143
+428	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	192
+429	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	134
+430	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	267
+431	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	159
+432	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	246
+433	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	141
+434	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	234
+435	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	186
+436	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	177
+437	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	248
+438	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	145
+439	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	235
+440	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	198
+441	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	163
+442	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	207
+443	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	209
+444	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	175
+445	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	276
+446	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	264
+447	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	129
+448	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	251
+449	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	195
+450	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	285
+451	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	120
+452	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	179
+453	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	268
+454	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	180
+455	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	214
+456	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	122
+457	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	127
+458	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	262
+459	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	204
+460	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	119
+461	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	270
+462	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	151
+463	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	253
+464	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	162
+465	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	292
+466	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	136
+467	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	168
+468	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	218
+469	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	196
+470	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	117
+471	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	265
+472	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	185
+473	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	213
+474	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	137
+475	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	149
+476	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	197
+477	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	114
+478	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	187
+479	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	205
+480	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	230
+481	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	286
+482	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	238
+483	2025-12-23 15:56:26.951997	2025-12-23 15:56:26.951997	t	4	155
+\.
+
+
+--
+-- TOC entry 5378 (class 0 OID 49461)
+-- Dependencies: 293
+-- Data for Name: reclamation; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.reclamation (reclamation_type, id, created_at, updated_at, actif, description, profile_id, reclamant_id, reference_reclamation, autre_categorie, autre_entreprise, autre_motif, organisme_detail, autre_nature, format_id, categorie_id, entreprise_id, motif_id, organisme_nature_id) FROM stdin;
+DPS	3	2025-12-24 15:35:22.81685	2025-12-24 15:35:22.81685	t	Message descriptif détaillée des faits	\N	2	DPS-1766586922816	\N	\N	\N	\N	\N	2	\N	\N	\N	2
+DPS	4	2025-12-24 15:41:23.263335	2025-12-24 15:41:23.263335	t	Message	\N	3	DPS-1766587283263	\N	\N	\N	\N	\N	2	\N	\N	\N	97
+DPS	5	2025-12-24 20:10:17.164817	2025-12-24 20:10:17.164817	t	sdf	\N	4	DPS-1766603417164	\N	\N	\N	\N	\N	2	\N	\N	\N	328
+DPS	6	2025-12-24 20:41:29.326379	2025-12-24 20:41:29.326379	t	sdf	\N	5	DPS-1766605289326	\N	\N	\N	\N	\N	2	\N	\N	\N	68
+DPS	7	2025-12-25 02:10:38.825129	2025-12-25 02:10:38.825129	t	sdf	\N	6	DPS-1766625038825	\N	\N	\N	\N	\N	2	\N	\N	\N	51
+DPS	8	2025-12-25 03:27:23.78314	2025-12-25 03:27:23.78314	t	SLFD	\N	7	DPS-1766629643783	\N	\N	\N	\N	\N	2	\N	\N	\N	149
+DPS	9	2025-12-25 04:21:37.296686	2025-12-25 04:21:37.296686	t	fghj	\N	8	DPS-1766632897296	\N	\N	\N	\N	\N	2	\N	\N	\N	391
+DPS	10	2025-12-25 06:28:09.40432	2025-12-25 06:28:09.40432	t	sdf	\N	9	DPS-1766640489406	\N	\N	\N	\N	\N	2	\N	\N	\N	12
+DPS	11	2025-12-25 10:00:18.29389	2025-12-25 10:00:18.29389	t	Message descriptif	\N	10	DPS-1766653218293	\N	\N	\N	\N	\N	2	\N	\N	\N	338
+\.
+
+
+--
+-- TOC entry 5380 (class 0 OID 49470)
+-- Dependencies: 295
+-- Data for Name: status; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.status (id, created_at, updated_at, actif, libelle, background_color, background_color_icon, contexte, description, icon, text_color) FROM stdin;
+1	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Réclamation nouvelle	#e0f2fe	bg-blue-500	ACAPS	Réclamation reçue et enregistrée dans le système.	faFileAlt	#0284c7
+2	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	En cours de traitement - consulté	#fef9c3	bg-yellow-400	ACAPS	Réclamation consultée par le chef de service.	faUser	#92400e
+3	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	En cours de traitement - attribuée	#fefce8	bg-yellow-600	ACAPS	Réclamation affectée à un cadre pour traitement.	faUserPlus	#ca8a04
+4	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Affectée : En attente de retour	#fff7ed	bg-orange-400	ACAPS	Réclamation transmise à un organisme externe - en attente de retour.	faBuilding	#c2410c
+5	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Affectée : Réclamation avec retour	#ecfdf5	bg-orange-600	ACAPS	Réponse reçue de l'organisme externe - en cours d'analyse.	faRedoAlt	#065f46
+6	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Demande de complément (chef de service)	#fce7f3	bg-purple-400	ACAPS	Demande d'informations complémentaires envoyée par le chef de service.	faQuestionCircle	#be185d
+7	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Demande de complément (cadre)	#e0f7fa	bg-purple-600	ACAPS	Demande d'informations complémentaires envoyée par le cadre de traitement.	faQuestionCircle	#00796b
+8	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	En proposition de réponse	#f0f9ff	bg-blue-600	ACAPS	Proposition de réponse formulée par le cadre - en attente de validation.	faCommentDots	#0e7490
+9	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Répondue	#d1fae5	bg-green-500	ACAPS	Réponse envoyée au réclamant - délai de 7 jours pour réouverture.	faCheckCircle	#15803d
+10	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Clôturée	#ede9fe	bg-gray-400	ACAPS	Réclamation clôturée	faLock	#6b21a8
+11	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Réouverte	#fdf2f8	bg-pink-500	ACAPS	Réclamation réouverte par le réclamant.	faRedo	#9d174d
+12	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Attribuée au métier	#fef9c3	bg-yellow-500	ORGANISME	La réclamation a été transmise au métier pour analyse et traitement.	faUsersCog	#854d0e
+13	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Attribuée : Avec retour	#ecfdf5	bg-green-400	ORGANISME	Le métier a apporté un retour sur la réclamation.	faReply	#166534
+14	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	En cours de traitement	#fef3c7	bg-amber-400	RECLAMANT	\N	faSpinner	#92400e
+15	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Demande de complément	#fee2e2	bg-red-400	RECLAMANT	\N	faExclamationCircle	#b91c1c
+16	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Réclamation nouvelle	#e0f2fe	bg-blue-500	ORGANISME	\N	faFileAlt	#0284c7
+17	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	En cours de traitement - consulté	#fef9c3	bg-yellow-400	ORGANISME	\N	faUser	#92400e
+18	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Répondue	#d1fae5	bg-green-500	ORGANISME	\N	faCheckCircle	#15803d
+19	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Clôturée	#ede9fe	bg-gray-400	ORGANISME	\N	faLock	#6b21a8
+20	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Répondue	#d1fae5	bg-green-500	RECLAMANT	\N	faCheckCircle	#15803d
+21	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Clôturée	#ede9fe	bg-gray-400	RECLAMANT	\N	faLock	#6b21a8
+22	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Réouverte	#fdf2f8	bg-pink-500	RECLAMANT	\N	faRedo	#9d174d
+\.
+
+
+--
+-- TOC entry 5382 (class 0 OID 49480)
+-- Dependencies: 297
+-- Data for Name: status_history; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.status_history (id, created_at, updated_at, contexte, current, reclamation_id, status_id, workflow_transition_id) FROM stdin;
+7	2025-12-24 15:41:23.833549	2025-12-24 15:41:23.833549	ACAPS	f	4	1	1
+9	2025-12-24 19:48:55.995574	2025-12-24 19:48:55.995574	ACAPS	f	4	2	2
+11	2025-12-24 19:49:45.327669	2025-12-24 19:49:45.327669	ORGANISME	t	4	10	21
+8	2025-12-24 15:41:26.550143	2025-12-24 15:41:26.550143	RECLAMANT	f	4	14	22
+12	2025-12-24 19:49:45.404272	2025-12-24 19:49:45.404272	RECLAMANT	f	4	9	24
+13	2025-12-24 19:50:18.355583	2025-12-24 19:50:18.355583	RECLAMANT	t	4	10	25
+10	2025-12-24 19:49:42.016662	2025-12-24 19:49:42.016662	ACAPS	f	4	9	9
+14	2025-12-24 19:50:18.433	2025-12-24 19:50:18.433	ACAPS	t	4	10	10
+5	2025-12-24 15:35:23.929638	2025-12-24 15:35:23.929638	ACAPS	f	3	1	1
+15	2025-12-24 19:54:25.882144	2025-12-24 19:54:25.882144	ACAPS	f	3	2	2
+17	2025-12-24 19:54:42.096203	2025-12-24 19:54:42.096203	ORGANISME	t	3	10	21
+6	2025-12-24 15:35:26.454138	2025-12-24 15:35:26.454138	RECLAMANT	f	3	14	22
+18	2025-12-24 19:54:42.166193	2025-12-24 19:54:42.166193	RECLAMANT	f	3	9	24
+19	2025-12-24 19:55:16.499373	2025-12-24 19:55:16.499373	RECLAMANT	t	3	10	25
+16	2025-12-24 19:54:39.825967	2025-12-24 19:54:39.825967	ACAPS	f	3	9	9
+20	2025-12-24 19:55:16.566961	2025-12-24 19:55:16.566961	ACAPS	t	3	10	10
+21	2025-12-24 20:10:18.957849	2025-12-24 20:10:18.957849	ACAPS	f	5	1	1
+23	2025-12-24 20:10:44.209106	2025-12-24 20:10:44.209106	ACAPS	f	5	2	2
+25	2025-12-24 20:15:48.996474	2025-12-24 20:15:48.996474	ORGANISME	t	5	10	21
+22	2025-12-24 20:10:21.543669	2025-12-24 20:10:21.543669	RECLAMANT	f	5	14	22
+26	2025-12-24 20:15:49.089161	2025-12-24 20:15:49.089161	RECLAMANT	f	5	9	24
+27	2025-12-24 20:17:14.810882	2025-12-24 20:17:14.810882	RECLAMANT	t	5	10	25
+24	2025-12-24 20:15:46.534582	2025-12-24 20:15:46.534582	ACAPS	f	5	9	9
+28	2025-12-24 20:17:14.866713	2025-12-24 20:17:14.866713	ACAPS	t	5	10	10
+29	2025-12-24 20:41:30.116277	2025-12-24 20:41:30.116277	ACAPS	f	6	1	1
+31	2025-12-24 20:42:01.423143	2025-12-24 20:42:01.423143	ACAPS	f	6	2	2
+33	2025-12-24 20:44:02.530353	2025-12-24 20:44:02.530353	ORGANISME	t	6	10	21
+30	2025-12-24 20:41:32.965083	2025-12-24 20:41:32.965083	RECLAMANT	f	6	14	22
+34	2025-12-24 20:44:02.584809	2025-12-24 20:44:02.584809	RECLAMANT	f	6	9	24
+35	2025-12-24 20:46:29.082388	2025-12-24 20:46:29.082388	RECLAMANT	t	6	10	25
+32	2025-12-24 20:44:00.172798	2025-12-24 20:44:00.172798	ACAPS	f	6	9	9
+36	2025-12-24 20:46:29.116389	2025-12-24 20:46:29.116389	ACAPS	t	6	10	10
+37	2025-12-25 02:10:38.985644	2025-12-25 02:10:38.985644	ACAPS	f	7	1	1
+39	2025-12-25 02:11:02.098308	2025-12-25 02:11:02.098308	ACAPS	f	7	2	2
+41	2025-12-25 02:11:11.494713	2025-12-25 02:11:11.494713	ORGANISME	t	7	10	21
+38	2025-12-25 02:10:42.102662	2025-12-25 02:10:42.102662	RECLAMANT	f	7	14	22
+42	2025-12-25 02:11:11.507607	2025-12-25 02:11:11.507607	RECLAMANT	f	7	9	24
+43	2025-12-25 02:11:32.678617	2025-12-25 02:11:32.678617	RECLAMANT	t	7	10	25
+40	2025-12-25 02:11:09.262823	2025-12-25 02:11:09.262823	ACAPS	f	7	9	9
+44	2025-12-25 02:11:32.696984	2025-12-25 02:11:32.696984	ACAPS	t	7	10	10
+45	2025-12-25 03:27:23.981826	2025-12-25 03:27:23.981826	ACAPS	f	8	1	1
+47	2025-12-25 03:27:41.401981	2025-12-25 03:27:41.401981	ACAPS	f	8	2	2
+49	2025-12-25 03:27:58.160016	2025-12-25 03:27:58.160016	ORGANISME	t	8	10	21
+46	2025-12-25 03:27:26.657909	2025-12-25 03:27:26.657909	RECLAMANT	f	8	14	22
+50	2025-12-25 03:27:58.183853	2025-12-25 03:27:58.183853	RECLAMANT	f	8	9	24
+51	2025-12-25 03:28:08.160263	2025-12-25 03:28:08.160263	RECLAMANT	t	8	10	25
+48	2025-12-25 03:27:54.560644	2025-12-25 03:27:54.560644	ACAPS	f	8	9	9
+52	2025-12-25 03:28:08.181876	2025-12-25 03:28:08.181876	ACAPS	t	8	10	10
+54	2025-12-25 04:21:39.885926	2025-12-25 04:21:39.885926	RECLAMANT	t	9	14	22
+53	2025-12-25 04:21:37.431963	2025-12-25 04:21:37.431963	ACAPS	f	9	1	1
+55	2025-12-25 04:22:06.143716	2025-12-25 04:22:06.143716	ACAPS	f	9	2	2
+56	2025-12-25 05:31:05.226396	2025-12-25 05:31:05.226396	ACAPS	t	9	3	3
+57	2025-12-25 06:28:12.378088	2025-12-25 06:28:12.378088	ACAPS	f	10	1	1
+59	2025-12-25 06:34:06.923917	2025-12-25 06:34:06.923917	ACAPS	f	10	2	2
+61	2025-12-25 09:39:45.795982	2025-12-25 09:39:45.795982	ORGANISME	t	10	10	21
+58	2025-12-25 06:28:16.234603	2025-12-25 06:28:16.234603	RECLAMANT	f	10	14	22
+62	2025-12-25 09:39:45.81179	2025-12-25 09:39:45.81179	RECLAMANT	f	10	9	24
+63	2025-12-25 09:40:01.173916	2025-12-25 09:40:01.173916	RECLAMANT	t	10	10	25
+60	2025-12-25 09:39:43.660618	2025-12-25 09:39:43.660618	ACAPS	f	10	9	9
+64	2025-12-25 09:40:01.182094	2025-12-25 09:40:01.182094	ACAPS	t	10	10	10
+65	2025-12-25 10:00:18.658377	2025-12-25 10:00:18.658377	ACAPS	f	11	1	1
+67	2025-12-25 10:13:53.97332	2025-12-25 10:13:53.97332	ACAPS	f	11	2	2
+69	2025-12-25 10:15:16.584123	2025-12-25 10:15:16.584123	ORGANISME	t	11	10	21
+66	2025-12-25 10:00:22.178661	2025-12-25 10:00:22.178661	RECLAMANT	f	11	14	22
+70	2025-12-25 10:15:16.657936	2025-12-25 10:15:16.657936	RECLAMANT	f	11	9	24
+71	2025-12-25 10:15:20.961771	2025-12-25 10:15:20.960784	RECLAMANT	t	11	10	25
+68	2025-12-25 10:15:12.684696	2025-12-25 10:15:12.684696	ACAPS	f	11	9	9
+72	2025-12-25 10:15:20.999831	2025-12-25 10:15:20.999831	ACAPS	t	11	10	10
+\.
+
+
+--
+-- TOC entry 5384 (class 0 OID 49488)
+-- Dependencies: 299
+-- Data for Name: workflow; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.workflow (id, created_at, updated_at, actif, libelle, contexte) FROM stdin;
+1	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Workflow ACAPS	ACAPS
+2	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Workflow Organisme	ORGANISME
+3	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	t	Workflow Reclamant	RECLAMANT
+\.
+
+
+--
+-- TOC entry 5386 (class 0 OID 49498)
+-- Dependencies: 301
+-- Data for Name: workflow_transition; Type: TABLE DATA; Schema: reclamation; Owner: postgres
+--
+
+COPY reclamation.workflow_transition (id, created_at, updated_at, trigger_type, from_status_id, to_status_id, workflow_id) FROM stdin;
+1	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	SUBMIT_RECLAMATION	\N	1	1
+2	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_VIEW	1	2	1
+3	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_ASSIGN_INTERNAL	2	3	1
+4	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_ASSIGN_ORGANISME	\N	4	1
+5	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ORGANISME_RETURN	4	5	1
+6	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_REQUEST_COMPLEMENT_CS	\N	6	1
+7	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_REQUEST_COMPLEMENT_CADRE	\N	7	1
+8	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_PROPOSE_RESPONSE	\N	8	1
+9	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_SEND_FINAL_RESPONSE	\N	9	1
+10	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	CLOSE	\N	10	1
+11	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	RECLAMANT_REOPEN	9	11	1
+12	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_REPONSE_ORGANISME	\N	4	1
+13	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ORG_SEND_RESPONSE	\N	5	1
+14	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_ASSIGN_ORGANISME	\N	1	2
+15	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ORG_VIEW	1	2	2
+16	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ORG_ASSIGN_METIER	2	12	2
+17	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	METIER_RESPONSE_INTERLOCUTEUR	12	13	2
+18	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	INTERLOCUTEUR_RESPONSE_METIER	\N	12	2
+19	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ORG_SEND_RESPONSE	\N	9	2
+20	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_REPONSE_ORGANISME	\N	2	2
+21	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_SEND_FINAL_RESPONSE	\N	10	2
+22	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	SUBMIT_RECLAMATION	\N	14	3
+23	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_REQUEST_COMPLEMENT	\N	15	3
+24	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	ACAPS_SEND_FINAL_RESPONSE	\N	9	3
+25	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	CLOSE	\N	10	3
+26	2025-12-23 15:56:27.026487	2025-12-23 15:56:27.026487	RECLAMANT_REOPEN	9	11	3
+27	2025-12-23 15:56:27.109562	2025-12-23 15:56:27.109562	ORG_REPONSE_WITHOUT_ASSIGN	4	5	1
+28	2025-12-23 15:56:27.109562	2025-12-23 15:56:27.109562	ORG_REPONSE_WITHOUT_ASSIGN	17	18	2
+29	2025-12-23 15:56:27.109562	2025-12-23 15:56:27.109562	ORG_METIER_RETURN	12	13	2
+\.
+
+
+--
+-- TOC entry 5429 (class 0 OID 0)
+-- Dependencies: 226
+-- Name: affectation_id_seq; Type: SEQUENCE SET; Schema: admin; Owner: postgres
+--
+
+SELECT pg_catalog.setval('admin.affectation_id_seq', 1, false);
+
+
+--
+-- TOC entry 5430 (class 0 OID 0)
+-- Dependencies: 228
+-- Name: permission_id_seq; Type: SEQUENCE SET; Schema: admin; Owner: postgres
+--
+
+SELECT pg_catalog.setval('admin.permission_id_seq', 30, true);
+
+
+--
+-- TOC entry 5431 (class 0 OID 0)
+-- Dependencies: 230
+-- Name: profil_id_seq; Type: SEQUENCE SET; Schema: admin; Owner: postgres
+--
+
+SELECT pg_catalog.setval('admin.profil_id_seq', 5, true);
+
+
+--
+-- TOC entry 5432 (class 0 OID 0)
+-- Dependencies: 234
+-- Name: role_id_seq; Type: SEQUENCE SET; Schema: admin; Owner: postgres
+--
+
+SELECT pg_catalog.setval('admin.role_id_seq', 8, true);
+
+
+--
+-- TOC entry 5433 (class 0 OID 0)
+-- Dependencies: 312
+-- Name: document_id_seq; Type: SEQUENCE SET; Schema: document; Owner: postgres
+--
+
+SELECT pg_catalog.setval('document.document_id_seq', 6, true);
+
+
+--
+-- TOC entry 5434 (class 0 OID 0)
+-- Dependencies: 258
+-- Name: attachments_id_seq; Type: SEQUENCE SET; Schema: messagerie; Owner: postgres
+--
+
+SELECT pg_catalog.setval('messagerie.attachments_id_seq', 1, false);
+
+
+--
+-- TOC entry 5435 (class 0 OID 0)
+-- Dependencies: 260
+-- Name: conversations_id_seq; Type: SEQUENCE SET; Schema: messagerie; Owner: postgres
+--
+
+SELECT pg_catalog.setval('messagerie.conversations_id_seq', 12, true);
+
+
+--
+-- TOC entry 5436 (class 0 OID 0)
+-- Dependencies: 262
+-- Name: messages_id_seq; Type: SEQUENCE SET; Schema: messagerie; Owner: postgres
+--
+
+SELECT pg_catalog.setval('messagerie.messages_id_seq', 10, true);
+
+
+--
+-- TOC entry 5437 (class 0 OID 0)
+-- Dependencies: 302
+-- Name: notification_id_seq; Type: SEQUENCE SET; Schema: notification; Owner: postgres
+--
+
+SELECT pg_catalog.setval('notification.notification_id_seq', 29, true);
+
+
+--
+-- TOC entry 5438 (class 0 OID 0)
+-- Dependencies: 304
+-- Name: notification_template_id_seq; Type: SEQUENCE SET; Schema: notification; Owner: postgres
+--
+
+SELECT pg_catalog.setval('notification.notification_template_id_seq', 28, true);
+
+
+--
+-- TOC entry 5439 (class 0 OID 0)
+-- Dependencies: 306
+-- Name: reminder_rule_id_seq; Type: SEQUENCE SET; Schema: notification; Owner: postgres
+--
+
+SELECT pg_catalog.setval('notification.reminder_rule_id_seq', 4, true);
+
+
+--
+-- TOC entry 5440 (class 0 OID 0)
+-- Dependencies: 308
+-- Name: scheduled_reminder_id_seq; Type: SEQUENCE SET; Schema: notification; Owner: postgres
+--
+
+SELECT pg_catalog.setval('notification.scheduled_reminder_id_seq', 1, false);
+
+
+--
+-- TOC entry 5441 (class 0 OID 0)
+-- Dependencies: 249
+-- Name: answer_id_seq; Type: SEQUENCE SET; Schema: questionnaire; Owner: postgres
+--
+
+SELECT pg_catalog.setval('questionnaire.answer_id_seq', 72, true);
+
+
+--
+-- TOC entry 5442 (class 0 OID 0)
+-- Dependencies: 251
+-- Name: choice_id_seq; Type: SEQUENCE SET; Schema: questionnaire; Owner: postgres
+--
+
+SELECT pg_catalog.setval('questionnaire.choice_id_seq', 5, true);
+
+
+--
+-- TOC entry 5443 (class 0 OID 0)
+-- Dependencies: 255
+-- Name: question_choice_id_seq; Type: SEQUENCE SET; Schema: questionnaire; Owner: postgres
+--
+
+SELECT pg_catalog.setval('questionnaire.question_choice_id_seq', 25, true);
+
+
+--
+-- TOC entry 5444 (class 0 OID 0)
+-- Dependencies: 253
+-- Name: question_id_seq; Type: SEQUENCE SET; Schema: questionnaire; Owner: postgres
+--
+
+SELECT pg_catalog.setval('questionnaire.question_id_seq', 11, true);
+
+
+--
+-- TOC entry 5445 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: partie_lesee_id_seq; Type: SEQUENCE SET; Schema: reclamant; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamant.partie_lesee_id_seq', 2, true);
+
+
+--
+-- TOC entry 5446 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: qualite_reclamant_id_seq; Type: SEQUENCE SET; Schema: reclamant; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamant.qualite_reclamant_id_seq', 6, true);
+
+
+--
+-- TOC entry 5447 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: reclamant_id_seq; Type: SEQUENCE SET; Schema: reclamant; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamant.reclamant_id_seq', 10, true);
+
+
+--
+-- TOC entry 5448 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: tranche_age_id_seq; Type: SEQUENCE SET; Schema: reclamant; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamant.tranche_age_id_seq', 4, true);
+
+
+--
+-- TOC entry 5449 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: type_piece_identite_id_seq; Type: SEQUENCE SET; Schema: reclamant; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamant.type_piece_identite_id_seq', 3, true);
+
+
+--
+-- TOC entry 5450 (class 0 OID 0)
+-- Dependencies: 264
+-- Name: affectation_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.affectation_id_seq', 1, true);
+
+
+--
+-- TOC entry 5451 (class 0 OID 0)
+-- Dependencies: 266
+-- Name: categorie_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.categorie_id_seq', 29, true);
+
+
+--
+-- TOC entry 5452 (class 0 OID 0)
+-- Dependencies: 268
+-- Name: classification_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.classification_id_seq', 1, false);
+
+
+--
+-- TOC entry 5453 (class 0 OID 0)
+-- Dependencies: 270
+-- Name: classification_motif_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.classification_motif_id_seq', 1, false);
+
+
+--
+-- TOC entry 5454 (class 0 OID 0)
+-- Dependencies: 272
+-- Name: dynamic_field_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.dynamic_field_id_seq', 5, true);
+
+
+--
+-- TOC entry 5455 (class 0 OID 0)
+-- Dependencies: 274
+-- Name: entreprise_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.entreprise_id_seq', 25, true);
+
+
+--
+-- TOC entry 5456 (class 0 OID 0)
+-- Dependencies: 276
+-- Name: format_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.format_id_seq', 4, true);
+
+
+--
+-- TOC entry 5457 (class 0 OID 0)
+-- Dependencies: 278
+-- Name: meta_data_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.meta_data_id_seq', 8, true);
+
+
+--
+-- TOC entry 5458 (class 0 OID 0)
+-- Dependencies: 280
+-- Name: modification_historique_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.modification_historique_id_seq', 1, false);
+
+
+--
+-- TOC entry 5459 (class 0 OID 0)
+-- Dependencies: 282
+-- Name: motif_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.motif_id_seq', 5, true);
+
+
+--
+-- TOC entry 5460 (class 0 OID 0)
+-- Dependencies: 284
+-- Name: nature_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.nature_id_seq', 48, true);
+
+
+--
+-- TOC entry 5461 (class 0 OID 0)
+-- Dependencies: 286
+-- Name: organisme_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.organisme_id_seq', 46, true);
+
+
+--
+-- TOC entry 5462 (class 0 OID 0)
+-- Dependencies: 290
+-- Name: organisme_nature_dynamic_field_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.organisme_nature_dynamic_field_id_seq', 483, true);
+
+
+--
+-- TOC entry 5463 (class 0 OID 0)
+-- Dependencies: 288
+-- Name: organisme_nature_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.organisme_nature_id_seq', 392, true);
+
+
+--
+-- TOC entry 5464 (class 0 OID 0)
+-- Dependencies: 292
+-- Name: reclamation_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.reclamation_id_seq', 11, true);
+
+
+--
+-- TOC entry 5465 (class 0 OID 0)
+-- Dependencies: 296
+-- Name: status_history_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.status_history_id_seq', 72, true);
+
+
+--
+-- TOC entry 5466 (class 0 OID 0)
+-- Dependencies: 294
+-- Name: status_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.status_id_seq', 22, true);
+
+
+--
+-- TOC entry 5467 (class 0 OID 0)
+-- Dependencies: 298
+-- Name: workflow_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.workflow_id_seq', 3, true);
+
+
+--
+-- TOC entry 5468 (class 0 OID 0)
+-- Dependencies: 300
+-- Name: workflow_transition_id_seq; Type: SEQUENCE SET; Schema: reclamation; Owner: postgres
+--
+
+SELECT pg_catalog.setval('reclamation.workflow_transition_id_seq', 29, true);
+
+
+--
+-- TOC entry 5007 (class 2606 OID 49083)
+-- Name: affectation affectation_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.affectation
+    ADD CONSTRAINT affectation_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5029 (class 2606 OID 49184)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5009 (class 2606 OID 49091)
+-- Name: permission permission_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.permission
+    ADD CONSTRAINT permission_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5021 (class 2606 OID 49106)
+-- Name: profil_permissions profil_permissions_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_permissions
+    ADD CONSTRAINT profil_permissions_pkey PRIMARY KEY (profil_id, permissions_id);
+
+
+--
+-- TOC entry 5013 (class 2606 OID 49101)
+-- Name: profil profil_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT profil_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5023 (class 2606 OID 49111)
+-- Name: profil_sauvegarde_permissions profil_sauvegarde_permissions_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_sauvegarde_permissions
+    ADD CONSTRAINT profil_sauvegarde_permissions_pkey PRIMARY KEY (profil_id, sauvegarde_permissions_id);
+
+
+--
+-- TOC entry 5027 (class 2606 OID 49123)
+-- Name: role_permissions role_permissions_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.role_permissions
+    ADD CONSTRAINT role_permissions_pkey PRIMARY KEY (role_id, permissions_id);
+
+
+--
+-- TOC entry 5025 (class 2606 OID 49118)
+-- Name: role role_pkey; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.role
+    ADD CONSTRAINT role_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5015 (class 2606 OID 49129)
+-- Name: profil uk5fb20yldojlatxokwe2v1q0x9; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT uk5fb20yldojlatxokwe2v1q0x9 UNIQUE (username);
+
+
+--
+-- TOC entry 5017 (class 2606 OID 49127)
+-- Name: profil ukcj61i8jed3poh11h43qwk6nes; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT ukcj61i8jed3poh11h43qwk6nes UNIQUE (keycloak_id);
+
+
+--
+-- TOC entry 5011 (class 2606 OID 49125)
+-- Name: permission ukm59hmtoyt55ivhub3xl2r5tlb; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.permission
+    ADD CONSTRAINT ukm59hmtoyt55ivhub3xl2r5tlb UNIQUE (code_permission);
+
+
+--
+-- TOC entry 5019 (class 2606 OID 49131)
+-- Name: profil ukpqtqocv0wep9ugjc0uftgweic; Type: CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT ukpqtqocv0wep9ugjc0uftgweic UNIQUE (personne_remplacee_id);
+
+
+--
+-- TOC entry 5118 (class 2606 OID 49715)
+-- Name: document document_pkey; Type: CONSTRAINT; Schema: document; Owner: postgres
+--
+
+ALTER TABLE ONLY document.document
+    ADD CONSTRAINT document_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5112 (class 2606 OID 49695)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: document; Owner: postgres
+--
+
+ALTER TABLE ONLY document.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5056 (class 2606 OID 49319)
+-- Name: attachments attachments_pkey; Type: CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.attachments
+    ADD CONSTRAINT attachments_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5060 (class 2606 OID 49326)
+-- Name: conversations conversations_pkey; Type: CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.conversations
+    ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5062 (class 2606 OID 49336)
+-- Name: messages messages_pkey; Type: CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.messages
+    ADD CONSTRAINT messages_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5058 (class 2606 OID 49338)
+-- Name: attachments ukjf1qvkop0s93w66t29m0855c5; Type: CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.attachments
+    ADD CONSTRAINT ukjf1qvkop0s93w66t29m0855c5 UNIQUE (stored_file_name);
+
+
+--
+-- TOC entry 5104 (class 2606 OID 49650)
+-- Name: notification notification_pkey; Type: CONSTRAINT; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE ONLY notification.notification
+    ADD CONSTRAINT notification_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5106 (class 2606 OID 49662)
+-- Name: notification_template notification_template_pkey; Type: CONSTRAINT; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE ONLY notification.notification_template
+    ADD CONSTRAINT notification_template_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5108 (class 2606 OID 49674)
+-- Name: reminder_rule reminder_rule_pkey; Type: CONSTRAINT; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE ONLY notification.reminder_rule
+    ADD CONSTRAINT reminder_rule_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5110 (class 2606 OID 49685)
+-- Name: scheduled_reminder scheduled_reminder_pkey; Type: CONSTRAINT; Schema: notification; Owner: postgres
+--
+
+ALTER TABLE ONLY notification.scheduled_reminder
+    ADD CONSTRAINT scheduled_reminder_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5002 (class 2606 OID 49064)
+-- Name: acaps_profil acaps_profil_pkey; Type: CONSTRAINT; Schema: profilsacaps; Owner: postgres
+--
+
+ALTER TABLE ONLY profilsacaps.acaps_profil
+    ADD CONSTRAINT acaps_profil_pkey PRIMARY KEY (matricule);
+
+
+--
+-- TOC entry 5004 (class 2606 OID 49072)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: profilsacaps; Owner: postgres
+--
+
+ALTER TABLE ONLY profilsacaps.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5045 (class 2606 OID 49262)
+-- Name: answer answer_pkey; Type: CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.answer
+    ADD CONSTRAINT answer_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5047 (class 2606 OID 49268)
+-- Name: choice choice_pkey; Type: CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.choice
+    ADD CONSTRAINT choice_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5053 (class 2606 OID 49307)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5051 (class 2606 OID 49284)
+-- Name: question_choice question_choice_pkey; Type: CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.question_choice
+    ADD CONSTRAINT question_choice_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5049 (class 2606 OID 49278)
+-- Name: question question_pkey; Type: CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.question
+    ADD CONSTRAINT question_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5042 (class 2606 OID 49251)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5032 (class 2606 OID 49193)
+-- Name: partie_lesee partie_lesee_pkey; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.partie_lesee
+    ADD CONSTRAINT partie_lesee_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5034 (class 2606 OID 49200)
+-- Name: qualite_reclamant qualite_reclamant_pkey; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.qualite_reclamant
+    ADD CONSTRAINT qualite_reclamant_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5036 (class 2606 OID 49209)
+-- Name: reclamant reclamant_pkey; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT reclamant_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5038 (class 2606 OID 49216)
+-- Name: tranche_age tranche_age_pkey; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.tranche_age
+    ADD CONSTRAINT tranche_age_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5040 (class 2606 OID 49223)
+-- Name: type_piece_identite type_piece_identite_pkey; Type: CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.type_piece_identite
+    ADD CONSTRAINT type_piece_identite_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5064 (class 2606 OID 49359)
+-- Name: affectation affectation_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.affectation
+    ADD CONSTRAINT affectation_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5066 (class 2606 OID 49366)
+-- Name: categorie categorie_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.categorie
+    ADD CONSTRAINT categorie_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5070 (class 2606 OID 49382)
+-- Name: classification_motif classification_motif_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification_motif
+    ADD CONSTRAINT classification_motif_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5068 (class 2606 OID 49375)
+-- Name: classification classification_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification
+    ADD CONSTRAINT classification_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5072 (class 2606 OID 49391)
+-- Name: dynamic_field dynamic_field_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.dynamic_field
+    ADD CONSTRAINT dynamic_field_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5074 (class 2606 OID 49398)
+-- Name: entreprise entreprise_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.entreprise
+    ADD CONSTRAINT entreprise_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5115 (class 2606 OID 49704)
+-- Name: flyway_schema_history flyway_schema_history_pk; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.flyway_schema_history
+    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY (installed_rank);
+
+
+--
+-- TOC entry 5076 (class 2606 OID 49405)
+-- Name: format format_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.format
+    ADD CONSTRAINT format_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5078 (class 2606 OID 49412)
+-- Name: meta_data meta_data_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.meta_data
+    ADD CONSTRAINT meta_data_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5080 (class 2606 OID 49421)
+-- Name: modification_historique modification_historique_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.modification_historique
+    ADD CONSTRAINT modification_historique_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5082 (class 2606 OID 49428)
+-- Name: motif motif_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.motif
+    ADD CONSTRAINT motif_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5084 (class 2606 OID 49435)
+-- Name: nature nature_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.nature
+    ADD CONSTRAINT nature_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5090 (class 2606 OID 49459)
+-- Name: organisme_nature_dynamic_field organisme_nature_dynamic_field_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature_dynamic_field
+    ADD CONSTRAINT organisme_nature_dynamic_field_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5088 (class 2606 OID 49452)
+-- Name: organisme_nature organisme_nature_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature
+    ADD CONSTRAINT organisme_nature_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5086 (class 2606 OID 49445)
+-- Name: organisme organisme_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme
+    ADD CONSTRAINT organisme_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5092 (class 2606 OID 49468)
+-- Name: reclamation reclamation_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT reclamation_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5098 (class 2606 OID 49486)
+-- Name: status_history status_history_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status_history
+    ADD CONSTRAINT status_history_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5096 (class 2606 OID 49478)
+-- Name: status status_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status
+    ADD CONSTRAINT status_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5094 (class 2606 OID 49505)
+-- Name: reclamation uk_axs3saruig26xv0cjav2mpias; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT uk_axs3saruig26xv0cjav2mpias UNIQUE (reference_reclamation);
+
+
+--
+-- TOC entry 5100 (class 2606 OID 49496)
+-- Name: workflow workflow_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow
+    ADD CONSTRAINT workflow_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5102 (class 2606 OID 49503)
+-- Name: workflow_transition workflow_transition_pkey; Type: CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow_transition
+    ADD CONSTRAINT workflow_transition_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 5030 (class 1259 OID 49185)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: admin; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON admin.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5113 (class 1259 OID 49696)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: document; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON document.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5005 (class 1259 OID 49073)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: profilsacaps; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON profilsacaps.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5054 (class 1259 OID 49308)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: questionnaire; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON questionnaire.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5043 (class 1259 OID 49252)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: reclamant; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON reclamant.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5116 (class 1259 OID 49705)
+-- Name: flyway_schema_history_s_idx; Type: INDEX; Schema: reclamation; Owner: postgres
+--
+
+CREATE INDEX flyway_schema_history_s_idx ON reclamation.flyway_schema_history USING btree (success);
+
+
+--
+-- TOC entry 5124 (class 2606 OID 49157)
+-- Name: profil_sauvegarde_permissions fk57e8j1u3nfvhqgc8atks4l7pt; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_sauvegarde_permissions
+    ADD CONSTRAINT fk57e8j1u3nfvhqgc8atks4l7pt FOREIGN KEY (sauvegarde_permissions_id) REFERENCES admin.permission(id);
+
+
+--
+-- TOC entry 5122 (class 2606 OID 49147)
+-- Name: profil_permissions fk5c40ws26ys8jc6r0qjf8mg35h; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_permissions
+    ADD CONSTRAINT fk5c40ws26ys8jc6r0qjf8mg35h FOREIGN KEY (permissions_id) REFERENCES admin.permission(id);
+
+
+--
+-- TOC entry 5120 (class 2606 OID 49142)
+-- Name: profil fka07gplwxpmdmrvsmvr1bahrkb; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT fka07gplwxpmdmrvsmvr1bahrkb FOREIGN KEY (role_id) REFERENCES admin.role(id);
+
+
+--
+-- TOC entry 5125 (class 2606 OID 49162)
+-- Name: profil_sauvegarde_permissions fkbcgw27eovretum7rtu3255r9s; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_sauvegarde_permissions
+    ADD CONSTRAINT fkbcgw27eovretum7rtu3255r9s FOREIGN KEY (profil_id) REFERENCES admin.profil(id);
+
+
+--
+-- TOC entry 5121 (class 2606 OID 49137)
+-- Name: profil fkbmdufj1090h5iffmm099vr2sh; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil
+    ADD CONSTRAINT fkbmdufj1090h5iffmm099vr2sh FOREIGN KEY (personne_remplacee_id) REFERENCES admin.profil(id);
+
+
+--
+-- TOC entry 5126 (class 2606 OID 49167)
+-- Name: role_permissions fkclluu29apreb6osx6ogt4qe16; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.role_permissions
+    ADD CONSTRAINT fkclluu29apreb6osx6ogt4qe16 FOREIGN KEY (permissions_id) REFERENCES admin.permission(id);
+
+
+--
+-- TOC entry 5119 (class 2606 OID 49132)
+-- Name: affectation fki682dyfi1km19f6pxdvvtw37e; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.affectation
+    ADD CONSTRAINT fki682dyfi1km19f6pxdvvtw37e FOREIGN KEY (profil_affecte_id) REFERENCES admin.profil(id);
+
+
+--
+-- TOC entry 5123 (class 2606 OID 49152)
+-- Name: profil_permissions fkjkb3de8sg2x0o2ni0hag647g5; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.profil_permissions
+    ADD CONSTRAINT fkjkb3de8sg2x0o2ni0hag647g5 FOREIGN KEY (profil_id) REFERENCES admin.profil(id);
+
+
+--
+-- TOC entry 5127 (class 2606 OID 49172)
+-- Name: role_permissions fklodb7xh4a2xjv39gc3lsop95n; Type: FK CONSTRAINT; Schema: admin; Owner: postgres
+--
+
+ALTER TABLE ONLY admin.role_permissions
+    ADD CONSTRAINT fklodb7xh4a2xjv39gc3lsop95n FOREIGN KEY (role_id) REFERENCES admin.role(id);
+
+
+--
+-- TOC entry 5136 (class 2606 OID 49339)
+-- Name: attachments fkcf4ta8qdkixetfy7wnqfv3vkv; Type: FK CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.attachments
+    ADD CONSTRAINT fkcf4ta8qdkixetfy7wnqfv3vkv FOREIGN KEY (message_id) REFERENCES messagerie.messages(id);
+
+
+--
+-- TOC entry 5137 (class 2606 OID 49344)
+-- Name: messages fkt492th6wsovh1nush5yl5jj8e; Type: FK CONSTRAINT; Schema: messagerie; Owner: postgres
+--
+
+ALTER TABLE ONLY messagerie.messages
+    ADD CONSTRAINT fkt492th6wsovh1nush5yl5jj8e FOREIGN KEY (conversation_id) REFERENCES messagerie.conversations(id);
+
+
+--
+-- TOC entry 5134 (class 2606 OID 49290)
+-- Name: question_choice fkao6fernsfb3w70mtanq3w7kf3; Type: FK CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.question_choice
+    ADD CONSTRAINT fkao6fernsfb3w70mtanq3w7kf3 FOREIGN KEY (choice_id) REFERENCES questionnaire.choice(id);
+
+
+--
+-- TOC entry 5133 (class 2606 OID 49285)
+-- Name: answer fke7c4h6uewbhu0gfunt0y4kfny; Type: FK CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.answer
+    ADD CONSTRAINT fke7c4h6uewbhu0gfunt0y4kfny FOREIGN KEY (question_choice_id) REFERENCES questionnaire.question_choice(id);
+
+
+--
+-- TOC entry 5135 (class 2606 OID 49295)
+-- Name: question_choice fkec34bq5b09d3dt1kquf9kkeej; Type: FK CONSTRAINT; Schema: questionnaire; Owner: postgres
+--
+
+ALTER TABLE ONLY questionnaire.question_choice
+    ADD CONSTRAINT fkec34bq5b09d3dt1kquf9kkeej FOREIGN KEY (question_id) REFERENCES questionnaire.question(id);
+
+
+--
+-- TOC entry 5128 (class 2606 OID 49239)
+-- Name: reclamant fkhyvlen0jr6qt0llasveed6nf9; Type: FK CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT fkhyvlen0jr6qt0llasveed6nf9 FOREIGN KEY (type_piece_identite_id) REFERENCES reclamant.type_piece_identite(id);
+
+
+--
+-- TOC entry 5129 (class 2606 OID 49229)
+-- Name: reclamant fkio28ftwwdgr2fij45s8x64w0s; Type: FK CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT fkio28ftwwdgr2fij45s8x64w0s FOREIGN KEY (qualite_reclamant_id) REFERENCES reclamant.qualite_reclamant(id);
+
+
+--
+-- TOC entry 5130 (class 2606 OID 49768)
+-- Name: reclamant fkku3cn73mug7qc5ja4b3dbu89m; Type: FK CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT fkku3cn73mug7qc5ja4b3dbu89m FOREIGN KEY (type_piece_identite_lesee_id) REFERENCES reclamant.type_piece_identite(id);
+
+
+--
+-- TOC entry 5131 (class 2606 OID 49224)
+-- Name: reclamant fkmf0t7yrmlgq7jwci3x43w32vu; Type: FK CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT fkmf0t7yrmlgq7jwci3x43w32vu FOREIGN KEY (partie_lesee_id) REFERENCES reclamant.partie_lesee(id);
+
+
+--
+-- TOC entry 5132 (class 2606 OID 49234)
+-- Name: reclamant fkpd1i1cka1in3wmv0s1b4cqjq; Type: FK CONSTRAINT; Schema: reclamant; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamant.reclamant
+    ADD CONSTRAINT fkpd1i1cka1in3wmv0s1b4cqjq FOREIGN KEY (tranche_age_id) REFERENCES reclamant.tranche_age(id);
+
+
+--
+-- TOC entry 5142 (class 2606 OID 49531)
+-- Name: classification fk14iw3enaflv5tp63jl1mhspcl; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification
+    ADD CONSTRAINT fk14iw3enaflv5tp63jl1mhspcl FOREIGN KEY (reclamation_id) REFERENCES reclamation.reclamation(id);
+
+
+--
+-- TOC entry 5148 (class 2606 OID 49556)
+-- Name: organisme fk3i6984nbtpnw8ikikj2d9b4yu; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme
+    ADD CONSTRAINT fk3i6984nbtpnw8ikikj2d9b4yu FOREIGN KEY (parent_id) REFERENCES reclamation.organisme(id);
+
+
+--
+-- TOC entry 5158 (class 2606 OID 49606)
+-- Name: status_history fk3u56tpph5r8r394pvrtol5463; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status_history
+    ADD CONSTRAINT fk3u56tpph5r8r394pvrtol5463 FOREIGN KEY (reclamation_id) REFERENCES reclamation.reclamation(id);
+
+
+--
+-- TOC entry 5153 (class 2606 OID 49586)
+-- Name: reclamation fk4lc43wxtv45rwp2la1l2wavgt; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT fk4lc43wxtv45rwp2la1l2wavgt FOREIGN KEY (categorie_id) REFERENCES reclamation.categorie(id);
+
+
+--
+-- TOC entry 5151 (class 2606 OID 49571)
+-- Name: organisme_nature_dynamic_field fk4psa4n8qy123q835o7cm47yol; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature_dynamic_field
+    ADD CONSTRAINT fk4psa4n8qy123q835o7cm47yol FOREIGN KEY (dynamic_field_id) REFERENCES reclamation.dynamic_field(id);
+
+
+--
+-- TOC entry 5138 (class 2606 OID 49506)
+-- Name: affectation fk67annflcbgqqnv670bm6ynq4c; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.affectation
+    ADD CONSTRAINT fk67annflcbgqqnv670bm6ynq4c FOREIGN KEY (entreprise_id) REFERENCES reclamation.entreprise(id);
+
+
+--
+-- TOC entry 5145 (class 2606 OID 49541)
+-- Name: meta_data fkag8k1mownr0gk8e5xc03043dc; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.meta_data
+    ADD CONSTRAINT fkag8k1mownr0gk8e5xc03043dc FOREIGN KEY (organisme_nature_dynamic_field_id) REFERENCES reclamation.organisme_nature_dynamic_field(id);
+
+
+--
+-- TOC entry 5149 (class 2606 OID 49561)
+-- Name: organisme_nature fkbks7ug2k0r6ee9llbj04re668; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature
+    ADD CONSTRAINT fkbks7ug2k0r6ee9llbj04re668 FOREIGN KEY (nature_id) REFERENCES reclamation.nature(id);
+
+
+--
+-- TOC entry 5146 (class 2606 OID 49546)
+-- Name: meta_data fkbvi92myoufaabkgfpge5cbrgy; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.meta_data
+    ADD CONSTRAINT fkbvi92myoufaabkgfpge5cbrgy FOREIGN KEY (reclamation_dps_id) REFERENCES reclamation.reclamation(id);
+
+
+--
+-- TOC entry 5159 (class 2606 OID 49616)
+-- Name: status_history fkc9qnkdxwxueg4eg2d06l86xm0; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status_history
+    ADD CONSTRAINT fkc9qnkdxwxueg4eg2d06l86xm0 FOREIGN KEY (workflow_transition_id) REFERENCES reclamation.workflow_transition(id);
+
+
+--
+-- TOC entry 5161 (class 2606 OID 49621)
+-- Name: workflow_transition fkcic9nayw44qshu3ux1lu6ufu3; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow_transition
+    ADD CONSTRAINT fkcic9nayw44qshu3ux1lu6ufu3 FOREIGN KEY (from_status_id) REFERENCES reclamation.status(id);
+
+
+--
+-- TOC entry 5150 (class 2606 OID 49566)
+-- Name: organisme_nature fkdyljeu2ah6lnj94lnkw4l5ttv; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature
+    ADD CONSTRAINT fkdyljeu2ah6lnj94lnkw4l5ttv FOREIGN KEY (organisme_id) REFERENCES reclamation.organisme(id);
+
+
+--
+-- TOC entry 5143 (class 2606 OID 49526)
+-- Name: classification fkearsmcjatcltdplmgrnb97n35; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.classification
+    ADD CONSTRAINT fkearsmcjatcltdplmgrnb97n35 FOREIGN KEY (classification_motif_id) REFERENCES reclamation.classification_motif(id);
+
+
+--
+-- TOC entry 5152 (class 2606 OID 49576)
+-- Name: organisme_nature_dynamic_field fkh50906iu2fefu4uxqmbcmliv3; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.organisme_nature_dynamic_field
+    ADD CONSTRAINT fkh50906iu2fefu4uxqmbcmliv3 FOREIGN KEY (organisme_nature_id) REFERENCES reclamation.organisme_nature(id);
+
+
+--
+-- TOC entry 5139 (class 2606 OID 49516)
+-- Name: affectation fkhthho50a0per8yafjwy6u3s0q; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.affectation
+    ADD CONSTRAINT fkhthho50a0per8yafjwy6u3s0q FOREIGN KEY (reclamation_id) REFERENCES reclamation.reclamation(id);
+
+
+--
+-- TOC entry 5154 (class 2606 OID 49596)
+-- Name: reclamation fkjd2gjb6snt78m9vl9ejeayphf; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT fkjd2gjb6snt78m9vl9ejeayphf FOREIGN KEY (motif_id) REFERENCES reclamation.motif(id);
+
+
+--
+-- TOC entry 5155 (class 2606 OID 49601)
+-- Name: reclamation fkkug4msfv6xdlq18ne5ssxplcl; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT fkkug4msfv6xdlq18ne5ssxplcl FOREIGN KEY (organisme_nature_id) REFERENCES reclamation.organisme_nature(id);
+
+
+--
+-- TOC entry 5140 (class 2606 OID 49511)
+-- Name: affectation fklondxdh37tcjuguqi6oj3ft8x; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.affectation
+    ADD CONSTRAINT fklondxdh37tcjuguqi6oj3ft8x FOREIGN KEY (organisme_id) REFERENCES reclamation.organisme(id);
+
+
+--
+-- TOC entry 5147 (class 2606 OID 49551)
+-- Name: modification_historique fklqs3m5r5680pp4fhr4lte4lhe; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.modification_historique
+    ADD CONSTRAINT fklqs3m5r5680pp4fhr4lte4lhe FOREIGN KEY (reclamation_id) REFERENCES reclamation.reclamation(id);
+
+
+--
+-- TOC entry 5160 (class 2606 OID 49611)
+-- Name: status_history fkm2al7gltr05pny36tostwkv3j; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.status_history
+    ADD CONSTRAINT fkm2al7gltr05pny36tostwkv3j FOREIGN KEY (status_id) REFERENCES reclamation.status(id);
+
+
+--
+-- TOC entry 5162 (class 2606 OID 49626)
+-- Name: workflow_transition fkm5ttyd9v0c81b4kxh2f0prmsg; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow_transition
+    ADD CONSTRAINT fkm5ttyd9v0c81b4kxh2f0prmsg FOREIGN KEY (to_status_id) REFERENCES reclamation.status(id);
+
+
+--
+-- TOC entry 5156 (class 2606 OID 49581)
+-- Name: reclamation fknhruh5o3amihxwekwulp2oyco; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT fknhruh5o3amihxwekwulp2oyco FOREIGN KEY (format_id) REFERENCES reclamation.format(id);
+
+
+--
+-- TOC entry 5163 (class 2606 OID 49631)
+-- Name: workflow_transition fkoqcdeu7kkl9nwpwwmsjx78sgv; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.workflow_transition
+    ADD CONSTRAINT fkoqcdeu7kkl9nwpwwmsjx78sgv FOREIGN KEY (workflow_id) REFERENCES reclamation.workflow(id);
+
+
+--
+-- TOC entry 5141 (class 2606 OID 49521)
+-- Name: categorie fkrqd72evvv23a3hft2wb6u5uh2; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.categorie
+    ADD CONSTRAINT fkrqd72evvv23a3hft2wb6u5uh2 FOREIGN KEY (parent_id) REFERENCES reclamation.categorie(id);
+
+
+--
+-- TOC entry 5157 (class 2606 OID 49591)
+-- Name: reclamation fks8slwydyif0hnm0w8ad632j2o; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.reclamation
+    ADD CONSTRAINT fks8slwydyif0hnm0w8ad632j2o FOREIGN KEY (entreprise_id) REFERENCES reclamation.entreprise(id);
+
+
+--
+-- TOC entry 5144 (class 2606 OID 49536)
+-- Name: entreprise fksltnfrfyjydhdp5e8c81hk8vf; Type: FK CONSTRAINT; Schema: reclamation; Owner: postgres
+--
+
+ALTER TABLE ONLY reclamation.entreprise
+    ADD CONSTRAINT fksltnfrfyjydhdp5e8c81hk8vf FOREIGN KEY (parent_id) REFERENCES reclamation.entreprise(id);
+
+
+-- Completed on 2025-12-25 12:44:04
+
+--
+-- PostgreSQL database dump complete
+--
 

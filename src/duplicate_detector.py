@@ -187,7 +187,7 @@ class DuplicateDetector:
         
         # Step 4: Store the embedding
         self._embedding_repo.save_embedding(reclamation_id, embedding)
-        
+
         # Step 5: Search for similar reclamations
         matches = self._embedding_repo.find_similar(
             embedding=embedding,
