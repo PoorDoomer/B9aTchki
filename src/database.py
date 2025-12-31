@@ -335,6 +335,7 @@ class EmbeddingRepository:
         - Metadata filtering (reclamant_id, time window)
         
         Args:
+            reclamant_id: The user ID (grouping key).
             embedding: Query embedding vector.
             exclude_id: Reclamation ID to exclude (self).
             min_score: Minimum similarity score threshold.
@@ -345,15 +346,33 @@ class EmbeddingRepository:
             List of SimilarityMatch objects sorted by score descending.
         """
         query = """
+            WITH current_reclamation AS (
+                SELECT
+                    rec.id,
+                    CASE
+                        WHEN rec.partie_lesee_id = 1 THEN rec.numero_piece_identite
+                        ELSE rec.numero_piece_identite_lesee
+                    END as cin_personne_lesee
+                FROM reclamant.reclamant rec
+                WHERE rec.id = %s
+            )
             SELECT
                 r.id as reclamation_id,
                 1 - (e.embedding <=> %s::vector) as score,
                 r.motif_id
             FROM reclamation.reclamation r
             JOIN public.reclamation_embeddings e ON r.id = e.reclamation_id
+            JOIN reclamant.reclamant rec_match ON rec_match.id = r.reclamant_id
+            CROSS JOIN current_reclamation cr
             WHERE
                 r.id != %s
                 AND r.created_at > NOW() - INTERVAL '1 day' * %s
+                AND cr.cin_personne_lesee =
+                    CASE
+                        WHEN rec_match.partie_lesee_id = 1 THEN rec_match.numero_piece_identite
+                        ELSE rec_match.numero_piece_identite_lesee
+                    END
+                AND cr.cin_personne_lesee IS NOT NULL
                 AND 1 - (e.embedding <=> %s::vector) > %s
             ORDER BY score DESC
             LIMIT %s;
@@ -363,12 +382,13 @@ class EmbeddingRepository:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 cur.execute(query, (
-                    embedding_str,
-                    exclude_id,
-                    time_window_days,
-                    embedding_str,
-                    min_score,
-                    limit
+                    reclamant_id,          # %s dans CTE WHERE rec.id = %s
+                    embedding_str,         # %s dans SELECT ... <=> %s::vector
+                    exclude_id,            # %s dans WHERE r.id != %s
+                    time_window_days,      # %s dans INTERVAL '1 day' * %s
+                    embedding_str,         # %s dans AND 1 - ... <=> %s::vector
+                    min_score,             # %s dans > %s
+                    limit                  # %s dans LIMIT %s
                 ))
                 
                 results = []
