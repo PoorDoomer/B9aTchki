@@ -207,42 +207,78 @@ class DuplicateDetector:
                 action=DuplicateAction.NO_ACTION,
                 message="No similar reclamations found"
             )
-        
-        best_match = matches[0]
-        action = self.determine_action(best_match.score)
+        for i in range(len(matches)):
+            logger.info(
+                f"Reclamation {reclamation_id}: Found match {matches[i].reclamation_id} "
+                f"with score {matches[i].score:.4f}"
+            )
+            match = matches[i]
+            action = self.determine_action(match.score)
+            # BUSINESS LOGIC: take action on the first match that triggers an action
+            if action != DuplicateAction.NO_ACTION:
+                match_status = self.get_match_status_for_action(action)
+                self._match_repo.create(
+                    reclamation_id=reclamation_id,
+                    matched_reclamation_id=match.reclamation_id,
+                    similarity_score=match.score,
+                    match_status=match_status.value
+                )
+                self._log_repo.create(
+                    source_reclamation_id=reclamation_id,
+                    matched_reclamation_id=match.reclamation_id,
+                    similarity_score=match.score,
+                    action=action.value
+                )
+                logger.info(
+                    f"Reclamation {reclamation_id}: {action.value} "
+                    f"(matched with {match.reclamation_id}, score={match.score:.4f})"
+                )
+                return DuplicateDetectionResult(
+                    reclamation_id=reclamation_id,
+                    is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
+                    action=action,
+                    matched_id=match.reclamation_id,
+                    similarity_score=match.score,
+                    message=f"Matched with reclamation {match.reclamation_id}"
+                )
+
+        # best_match = matches[0]
+        # action = self.determine_action(best_match.score)
         
         # Step 7: Create match record and log based on action
-        if action != DuplicateAction.NO_ACTION:
-            # Create match record with status
-            match_status = self.get_match_status_for_action(action)
-            self._match_repo.create(
-                reclamation_id=reclamation_id,
-                matched_reclamation_id=best_match.reclamation_id,
-                similarity_score=best_match.score,
-                match_status=match_status.value
-            )
-            logger.info("AUDIT LOG")
-            # Create audit log
-            self._log_repo.create(
-                source_reclamation_id=reclamation_id,
-                matched_reclamation_id=best_match.reclamation_id,
-                similarity_score=best_match.score,
-                action=action.value
-            )
+        # if action != DuplicateAction.NO_ACTION:
+        #     # Create match record with status
+        #     match_status = self.get_match_status_for_action(action)
+        #     self._match_repo.create(
+        #         reclamation_id=reclamation_id,
+        #         matched_reclamation_id=best_match.reclamation_id,
+        #         similarity_score=best_match.score,
+        #         match_status=match_status.value
+        #     )
+        #     logger.info("AUDIT LOG")
+        #     # Create audit log
+        #     self._log_repo.create(
+        #         source_reclamation_id=reclamation_id,
+        #         matched_reclamation_id=best_match.reclamation_id,
+        #         similarity_score=best_match.score,
+        #         action=action.value
+        #     )
             
-            logger.info(
-                f"Reclamation {reclamation_id}: {action.value} "
-                f"(matched with {best_match.reclamation_id}, score={best_match.score:.4f})"
-            )
+        #     logger.info(
+        #         f"Reclamation {reclamation_id}: {action.value} "
+        #         f"(matched with {best_match.reclamation_id}, score={best_match.score:.4f})"
+        #     )
+
+
         
-        return DuplicateDetectionResult(
-            reclamation_id=reclamation_id,
-            is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
-            action=action,
-            matched_id=best_match.reclamation_id if action != DuplicateAction.NO_ACTION else None,
-            similarity_score=best_match.score if action != DuplicateAction.NO_ACTION else None,
-            message=f"Matched with reclamation {best_match.reclamation_id}" if action != DuplicateAction.NO_ACTION else "Unique reclamation"
-        )
+        # return DuplicateDetectionResult(
+        #     reclamation_id=reclamation_id,
+        #     is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
+        #     action=action,
+        #     matched_id=best_match.reclamation_id if action != DuplicateAction.NO_ACTION else None,
+        #     similarity_score=best_match.score if action != DuplicateAction.NO_ACTION else None,
+        #     message=f"Matched with reclamation {best_match.reclamation_id}" if action != DuplicateAction.NO_ACTION else "Unique reclamation"
+        # )
     
     def check_similarity(
         self,
