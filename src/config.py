@@ -98,7 +98,7 @@ class DuplicateDetectionConfig:
     threshold_auto_duplicate: Optional[float] = None
     threshold_review: Optional[float] = None
     time_window_days: Optional[int] = None
-    
+    limit: Optional[int] = None
     def __post_init__(self):
         """Load values from environment if not provided."""
         # Thresholds lowered to better capture cross-lingual paraphrased duplicates:
@@ -111,7 +111,8 @@ class DuplicateDetectionConfig:
             self.threshold_review = float(os.getenv("THRESHOLD_REVIEW", "0.70"))
         if self.time_window_days is None:
             self.time_window_days = int(os.getenv("TIME_WINDOW_DAYS", "7"))
-
+        if self.limit is None:
+            self.limit = int(os.getenv("LIMIT_SIMILAR_RECLAMATIONS", "5"))
 
 @dataclass
 class Config:

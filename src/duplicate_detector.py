@@ -195,7 +195,7 @@ class DuplicateDetector:
             exclude_id=reclamation_id,
             min_score=self.threshold_review,
             time_window_days=self.time_window_days,
-            limit=1  # We only need the best match
+            limit=self._config.limit  
         )
         
         # Step 6: Apply business rules
