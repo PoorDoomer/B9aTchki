@@ -318,6 +318,24 @@ class EmbeddingRepository:
                     return [float(x) for x in embedding_str.split(",")]
                 return None
     
+    def find_similar_exceeded(
+        self,
+        embedding_chunks: dict[int, list[float]],
+        exclude_id: int,
+        min_score: float = 0.85,
+        time_window_days: int = 7,
+        limit: int = 5
+    )-> list[SimilarityMatch]:
+        """ 
+        Find similar reclamations between reclamations that have chunks using vector similarity search.
+        Logic : 
+        1. Calculate the logic 
+        
+
+        """
+    
+    
+    
     def find_similar(
         self,
         embedding: list[float],

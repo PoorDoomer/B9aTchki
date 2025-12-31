@@ -55,7 +55,7 @@ class EmbeddingModel:
         self.model_name = config.model_name
         self.dimension = config.embedding_dimension
         self._model = None
-        
+        self.max_seq_tokens = config.max_seq_tokens
         EmbeddingModel._initialized = True
         logger.info(f"EmbeddingModel initialized with model: {self.model_name}")
     
@@ -84,7 +84,9 @@ class EmbeddingModel:
         except Exception as e:
             logger.error(f"Failed to load model {self.model_name}: {e}")
             raise
-    
+
+
+
     def encode(
         self,
         texts: Union[str, list[str]],
@@ -108,6 +110,8 @@ class EmbeddingModel:
         single_input = isinstance(texts, str)
         if single_input:
             texts = [texts]
+        token_numbers = [self.count_tokens(text) for text in texts]
+        logger.debug(f"Token counts for inputs: {token_numbers}")
         
         embeddings = self.model.encode(
             texts,

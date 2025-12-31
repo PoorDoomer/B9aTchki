@@ -83,14 +83,15 @@ class MLConfig:
     """Machine Learning configuration."""
     model_name: Optional[str] = None
     embedding_dimension: Optional[int] = None
-    
+    max_seq_tokens: Optional[int] = None
     def __post_init__(self):
         """Load values from environment if not provided."""
         if self.model_name is None:
             self.model_name = os.getenv("LABSE_MODEL", "sentence-transformers/LaBSE")
         if self.embedding_dimension is None:
             self.embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
-
+        if self.max_seq_tokens is None:
+            self.max_seq_tokens = int(os.getenv("MAX_SEQ_TOKENS", "256"))
 
 @dataclass  
 class DuplicateDetectionConfig:
