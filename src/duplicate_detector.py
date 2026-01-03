@@ -207,6 +207,7 @@ class DuplicateDetector:
                 action=DuplicateAction.NO_ACTION,
                 message="No similar reclamations found"
             )
+        match = matches[0]
         for i in range(len(matches)):
             logger.info(
                 f"Reclamation {reclamation_id}: Found match {matches[i].reclamation_id} "
@@ -233,13 +234,18 @@ class DuplicateDetector:
                     f"Reclamation {reclamation_id}: {action.value} "
                     f"(matched with {match.reclamation_id}, score={match.score:.4f})"
                 )
-                return DuplicateDetectionResult(
-                    reclamation_id=reclamation_id,
-                    is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
-                    action=action,
-                    matched_id=match.reclamation_id,
-                    similarity_score=match.score,
-                    message=f"Matched with reclamation {match.reclamation_id}"
+        logger.info(f"Reclamation {reclamation_id}: Completed processing with {len(matches)} matches")
+        
+        matchi = matches[0]
+        action = self.determine_action(matchi.score)
+        logger.info(f"Highest score match for reclamation {reclamation_id} is {matchi.reclamation_id} with score {matchi.score:.4f}, action: {action.value}")
+        return DuplicateDetectionResult(
+                reclamation_id=reclamation_id,
+                is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
+                action=action,
+                matched_id=matchi.reclamation_id,
+                similarity_score=matchi.score,
+                message=f"Matched with reclamation {match.reclamation_id}"
                 )
 
         # best_match = matches[0]
