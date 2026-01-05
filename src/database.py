@@ -367,12 +367,17 @@ class EmbeddingRepository:
             WHERE
                 r.id != %s
                 AND r.created_at > NOW() - INTERVAL '1 day' * %s
-                AND cr.cin_personne_lesee =
-                    CASE
-                        WHEN rec_match.partie_lesee_id = 1 THEN rec_match.numero_piece_identite
-                        ELSE rec_match.numero_piece_identite_lesee
-                    END
-                AND cr.cin_personne_lesee IS NOT NULL
+                AND (
+                    -- Si CIN est NULL, on cherche par similarite seulement
+                    cr.cin_personne_lesee IS NULL
+                    OR
+                    -- Si CIN existe, on verifie qu'il correspond
+                    cr.cin_personne_lesee =
+                        CASE
+                            WHEN rec_match.partie_lesee_id = 1 THEN rec_match.numero_piece_identite
+                            ELSE rec_match.numero_piece_identite_lesee
+                        END
+                )
                 AND 1 - (e.embedding <=> %s::vector) > %s
             ORDER BY score DESC
             LIMIT %s;
