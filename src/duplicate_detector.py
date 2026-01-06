@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Optional
 from sentences import sentences
 from src.config import get_config, DuplicateDetectionConfig
+from src.config import get_config, DuplicateDetectionConfig, MLConfig
 from src.database import (
     DatabasePool,
     ReclamationRepository,
@@ -19,6 +20,7 @@ from src.database import (
     ReclamationMatchRepository,
     Reclamation,
     SimilarityMatch,
+    SimilarityMatchChunkResult,
 )
 from src.preprocessing import normalize_text
 from src.embeddings import get_embedding_model
@@ -82,16 +84,19 @@ class DuplicateDetector:
         self._log_repo = DuplicationLogRepository(db_pool)
         self._match_repo = ReclamationMatchRepository(db_pool)
         
+        # Get full config
+        full_config = get_config()
+        self._ml_config = full_config.ml
+        
         # Thresholds
         self.threshold_auto_duplicate = self._config.threshold_auto_duplicate
         self.threshold_review = self._config.threshold_review
         self.time_window_days = self._config.time_window_days
-        
         logger.info(
             f"DuplicateDetector initialized: "
             f"auto_threshold={self.threshold_auto_duplicate}, "
             f"review_threshold={self.threshold_review}, "
-            f"time_window={self.time_window_days} days"
+            f"time_window={self.time_window_days} days (using MaxSim)"
         )
     
     def determine_action(self, score: float) -> DuplicateAction:
@@ -182,26 +187,39 @@ class DuplicateDetector:
                 message="Empty text after normalization"
             )
         #Step 2.2 : REMOVE KEYWORDS b7al salama 3alaikum
-        logger.debug(f"Reclamation {reclamation_id}: Token count before cleaning: {number_of_tokens}")
         number_of_tokens=count_tokens(normalized_text)
+        logger.debug(f"Reclamation {reclamation_id}: Token count before cleaning: {number_of_tokens}")
 
         cleaner=TextCleaner(sentences)
         normalized_text=cleaner.remove_sentences(normalized_text)
         number_of_tokens=count_tokens(normalized_text)
         logger.debug(f"Reclamation {reclamation_id}: Token count after cleaning: {number_of_tokens}")
-        if number_of_tokens > self._config.max_seq_tokens:
+        # Step 3-4: Generate and store embeddings (chunked or single)
+        is_chunked = False
+        if number_of_tokens > self._ml_config.max_seq_tokens:
             logger.warning(f"Reclamation {reclamation_id} exceeds max token limit after cleaning")
+            is_chunked = True
             chunker=Chunker()
             chunks = chunker.chunk_text(normalized_text)
-            embedding_chunks = {}
-            for i in range(len(chunks)):
-                logger.debug(f"EMBEDDING : Reclamation {reclamation_id}: Chunk {i+1} token count: {count_tokens(chunks[i])}")
-                model = get_embedding_model()
-                embedding_chunks[reclamation_id] = model.encode_to_list(chunks[i])
-                self._embedding_repo.save_embedding(f"{reclamation_id}_chunk_{i+1}", embedding_chunks[reclamation_id])
-            logger.info(f"Reclamation {reclamation_id}: Processed {len(chunks)} chunks due to token limit")
-            
+            model = get_embedding_model()
+            for i, chunk in enumerate(chunks, 1):
+                embedding = model.encode_to_list(chunk)
+                self._embedding_repo.save_embedding(f"{reclamation_id}_chunk_{i}", embedding)
+                logger.debug(f"Saved chunk {i} for reclamation {reclamation_id}")
+            logger.info(f"Reclamation {reclamation_id}: Split into {len(chunks)} chunks")
 
+            # Step 5: Search for matches using chunk-aware comparison
+            matches = self._embedding_repo.find_similar_exceeded(
+                reclamation_id=reclamation_id,
+                reclamant_id=reclamation.reclamant_id,
+                exclude_id=reclamation_id,
+                min_score=self.threshold_review,
+                time_window_days=self.time_window_days,
+                top_k_chunks=self.top_k_chunks,
+                use_advanced_matching=self.use_advanced_matching,
+                elasticity_factor=self.elasticity_factor
+            )
+            
         else:
             # Step 3: Generate embedding
             model = get_embedding_model()
@@ -210,61 +228,82 @@ class DuplicateDetector:
             # Step 4: Store the embedding
             self._embedding_repo.save_embedding(reclamation_id, embedding)
 
-            # Step 5: Search for similar reclamations
+            # Step 5: Search for similar reclamations (no limit - get ALL matches above threshold)
             matches = self._embedding_repo.find_similar(
                 embedding=embedding,
                 reclamant_id=reclamation.reclamant_id,
                 exclude_id=reclamation_id,
                 min_score=self.threshold_review,
                 time_window_days=self.time_window_days,
-                limit=1  # We only need the best match
+                limit=None  # Get ALL matches above threshold
             )
         
-            # Step 6: Apply business rules
-            if not matches:
-                logger.info(f"Reclamation {reclamation_id}: No duplicates found")
-                return DuplicateDetectionResult(
-                    reclamation_id=reclamation_id,
-                    is_duplicate=False,
-                    action=DuplicateAction.NO_ACTION,
-                    message="No similar reclamations found"
-                )
+        # Step 6-7: Process ALL matches (not just best match)
+        if not matches:
+            logger.info(f"Reclamation {reclamation_id}: No duplicates found")
+            return DuplicateDetectionResult(
+                reclamation_id=reclamation_id,
+                is_duplicate=False,
+                action=DuplicateAction.NO_ACTION,
+                message="No similar reclamations found"
+            )
+        
+        logger.info(f"Reclamation {reclamation_id}: Found {len(matches)} potential match(es)")
+        
+        # Process each match
+        for match in matches:
+            # Handle both SimilarityMatch and SimilarityMatchChunkResult
+            if isinstance(match, SimilarityMatchChunkResult):
+                matched_id = match.reclamation_id
+                score = match.similarity_score
+                chunk_info = f" (MaxSim: forward={match.forward_score:.3f}, backward={match.backward_score:.3f}, best={match.best_chunk_pair_score:.3f})"
+            else:
+                matched_id = match.reclamation_id
+                score = match.score
+                chunk_info = ""
             
-            best_match = matches[0]
-            action = self.determine_action(best_match.score)
+            action = self.determine_action(score)
             
-            # Step 7: Create match record and log based on action
             if action != DuplicateAction.NO_ACTION:
-                # Create match record with status
                 match_status = self.get_match_status_for_action(action)
                 self._match_repo.create(
                     reclamation_id=reclamation_id,
-                    matched_reclamation_id=best_match.reclamation_id,
-                    similarity_score=best_match.score,
+                    matched_reclamation_id=matched_id,
+                    similarity_score=score,
                     match_status=match_status.value
                 )
+                
                 logger.info("AUDIT LOG")
-                # Create audit log
                 self._log_repo.create(
                     source_reclamation_id=reclamation_id,
-                    matched_reclamation_id=best_match.reclamation_id,
-                    similarity_score=best_match.score,
+                    matched_reclamation_id=matched_id,
+                    similarity_score=score,
                     action=action.value
                 )
                 
                 logger.info(
                     f"Reclamation {reclamation_id}: {action.value} "
-                    f"(matched with {best_match.reclamation_id}, score={best_match.score:.4f})"
+                    f"(matched with {matched_id}, score={score:.4f}{chunk_info})"
                 )
+        
+        # Determine overall result using highest scoring match
+        if isinstance(matches[0], SimilarityMatchChunkResult):
+            best_match_score = matches[0].similarity_score
+            best_match_id = matches[0].reclamation_id
+        else:
+            best_match_score = matches[0].score
+            best_match_id = matches[0].reclamation_id
             
-            return DuplicateDetectionResult(
-                reclamation_id=reclamation_id,
-                is_duplicate=(action == DuplicateAction.AUTO_MARK_DUPLICATE),
-                action=action,
-                matched_id=best_match.reclamation_id if action != DuplicateAction.NO_ACTION else None,
-                similarity_score=best_match.score if action != DuplicateAction.NO_ACTION else None,
-                message=f"Matched with reclamation {best_match.reclamation_id}" if action != DuplicateAction.NO_ACTION else "Unique reclamation"
-            )
+        best_action = self.determine_action(best_match_score)
+        
+        return DuplicateDetectionResult(
+            reclamation_id=reclamation_id,
+            is_duplicate=(best_action == DuplicateAction.AUTO_MARK_DUPLICATE),
+            action=best_action,
+            matched_id=best_match_id,
+            similarity_score=best_match_score,
+            message=f"Found {len(matches)} match(es), best matched with {best_match_id}"
+        )
     
     def check_similarity(
         self,

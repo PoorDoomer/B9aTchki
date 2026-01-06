@@ -99,6 +99,9 @@ class DuplicateDetectionConfig:
     threshold_auto_duplicate: Optional[float] = None
     threshold_review: Optional[float] = None
     time_window_days: Optional[int] = None
+    top_k_chunks: Optional[int] = None
+    use_advanced_matching: Optional[bool] = None
+    elasticity_factor: Optional[float] = None
     
     def __post_init__(self):
         """Load values from environment if not provided."""
@@ -112,6 +115,12 @@ class DuplicateDetectionConfig:
             self.threshold_review = float(os.getenv("THRESHOLD_REVIEW", "0.70"))
         if self.time_window_days is None:
             self.time_window_days = int(os.getenv("TIME_WINDOW_DAYS", "7"))
+        if self.top_k_chunks is None:
+            self.top_k_chunks = int(os.getenv("TOP_K_CHUNKS", "3"))
+        if self.use_advanced_matching is None:
+            self.use_advanced_matching = os.getenv("USE_ADVANCED_MATCHING", "true").lower() == "true"
+        if self.elasticity_factor is None:
+            self.elasticity_factor = float(os.getenv("ELASTICITY_FACTOR", "0.15"))
 
 
 @dataclass
